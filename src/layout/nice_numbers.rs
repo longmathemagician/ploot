@@ -29,10 +29,15 @@ pub fn nice_number(x: f64, round: bool) -> f64 {
 }
 
 /// A set of computed tick marks for an axis.
+#[derive(Clone)]
 pub struct TickSet {
+    /// Axis minimum (rounded to the nearest nice number).
     pub min: f64,
+    /// Axis maximum (rounded to the nearest nice number).
     pub max: f64,
+    /// Spacing between consecutive ticks.
     pub spacing: f64,
+    /// Tick positions and their formatted labels.
     pub ticks: Vec<(f64, String)>,
 }
 

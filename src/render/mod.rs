@@ -1,0 +1,1009 @@
+//! Rendering pipeline — dispatches [`Figure`] data to canvas.
+
+/// Box-and-whisker plot renderer.
+pub mod box_whisker;
+/// Bar chart renderer.
+pub mod boxes;
+/// Error bar renderer.
+pub mod error_bars;
+/// Fill-between area renderer.
+pub mod fill;
+/// Grid line renderer.
+pub mod grid;
+/// Legend overlay renderer.
+pub mod legend;
+/// Line series renderer.
+pub mod lines;
+/// Point (scatter) renderer.
+pub mod points;
+
+use crate::api::axes::Axes2D;
+use crate::api::figure::Figure;
+use crate::api::options::{AutoOption, DashType, PlotOption, PointSymbol};
+use crate::api::series::SeriesData;
+use crate::canvas::color::TermColor;
+use crate::canvas::{BrailleCanvas, PALETTE};
+use crate::layout::text::TextGrid;
+use crate::layout::{Layout, LayoutConfig, compute_layout, generate_ticks, render_frame};
+use crate::transform::{CoordinateMapper, aligned_x_pixel_range, aligned_y_pixel_range};
+
+/// Render a complete Figure to a string.
+pub fn render_figure(fig: &Figure) -> String {
+    if fig.axes.is_empty() {
+        return String::new();
+    }
+
+    match fig.multiplot {
+        Some((rows, cols)) => render_multiplot(fig, rows, cols),
+        None => {
+            // Single plot — use first axes
+            render_single_axes(&fig.axes[0], fig.title.as_deref(), fig.width, fig.height)
+        }
+    }
+}
+
+/// Render a multiplot grid.
+fn render_multiplot(fig: &Figure, rows: usize, cols: usize) -> String {
+    let title_rows = if fig.title.is_some() { 1 } else { 0 };
+    let sub_height = fig.height.saturating_sub(title_rows) / rows.max(1);
+    let sub_width = fig.width / cols.max(1);
+
+    let mut master = TextGrid::new(fig.width, fig.height);
+
+    // Draw super-title
+    if let Some(title) = &fig.title {
+        master.put_str_centered(0, fig.width, 0, title, TermColor::Default);
+    }
+
+    for (i, axes) in fig.axes.iter().enumerate() {
+        let grid_row = i / cols;
+        let grid_col = i % cols;
+        if grid_row >= rows {
+            break;
+        }
+
+        let rendered = render_single_axes(axes, None, sub_width, sub_height);
+
+        // Blit into master grid at the subplot position
+        let offset_col = grid_col * sub_width;
+        let offset_row = title_rows + grid_row * sub_height;
+
+        for (line_idx, line) in rendered.lines().enumerate() {
+            let row = offset_row + line_idx;
+            if row >= fig.height {
+                break;
+            }
+            let mut col = offset_col;
+            for ch in line.chars() {
+                if ch == '\x1b' {
+                    // Skip ANSI — we're blitting plain chars here
+                    continue;
+                }
+                if col < fig.width {
+                    master.put_char(col, row, ch, TermColor::Default);
+                }
+                col += 1;
+            }
+        }
+    }
+
+    // Re-render multiplot with color — render each subplot independently and use
+    // direct text blitting for now
+    let mut output = String::new();
+    if let Some(title) = &fig.title {
+        let pad = fig.width.saturating_sub(title.len()) / 2;
+        for _ in 0..pad {
+            output.push(' ');
+        }
+        output.push_str(title);
+        for _ in 0..(fig.width.saturating_sub(pad + title.len())) {
+            output.push(' ');
+        }
+        output.push('\n');
+    }
+
+    for grid_row in 0..rows {
+        // Render each row of subplots
+        let axes_in_row: Vec<_> = (0..cols)
+            .filter_map(|grid_col| {
+                let idx = grid_row * cols + grid_col;
+                fig.axes.get(idx)
+            })
+            .collect();
+
+        // Render each subplot
+        let rendered: Vec<String> = axes_in_row
+            .iter()
+            .map(|axes| render_single_axes(axes, None, sub_width, sub_height))
+            .collect();
+
+        // Interleave lines from each subplot
+        let max_lines = rendered
+            .iter()
+            .map(|r| r.lines().count())
+            .max()
+            .unwrap_or(0);
+        for line_idx in 0..max_lines {
+            for (col_idx, r) in rendered.iter().enumerate() {
+                if let Some(line) = r.lines().nth(line_idx) {
+                    output.push_str(line);
+                } else {
+                    // Pad empty line
+                    for _ in 0..sub_width {
+                        output.push(' ');
+                    }
+                }
+                if col_idx < rendered.len() - 1 {
+                    // No separator needed, widths should align
+                }
+            }
+            output.push('\n');
+        }
+    }
+
+    // Remove trailing newline
+    if output.ends_with('\n') {
+        output.pop();
+    }
+
+    output
+}
+
+/// Render a single Axes2D to a string.
+fn render_single_axes(
+    axes: &Axes2D,
+    super_title: Option<&str>,
+    width: usize,
+    height: usize,
+) -> String {
+    // Compute data ranges
+    let (x_min, x_max, y_min, y_max) = compute_data_ranges(axes);
+
+    // Apply manual range overrides
+    let x_min = match &axes.x_axis.range_min {
+        AutoOption::Fix(v) => *v,
+        AutoOption::Auto => x_min,
+    };
+    let x_max = match &axes.x_axis.range_max {
+        AutoOption::Fix(v) => *v,
+        AutoOption::Auto => x_max,
+    };
+    let y_min = match &axes.y_axis.range_min {
+        AutoOption::Fix(v) => *v,
+        AutoOption::Auto => y_min,
+    };
+    let y_max = match &axes.y_axis.range_max {
+        AutoOption::Fix(v) => *v,
+        AutoOption::Auto => y_max,
+    };
+
+    // Generate ticks
+    let x_ticks = if let Some(custom) = &axes.x_axis.custom_ticks {
+        custom_tick_set(custom, x_min, x_max)
+    } else if let Some(base) = axes.x_axis.log_base {
+        log_ticks(x_min, x_max, base)
+    } else {
+        generate_ticks(x_min, x_max, 6)
+    };
+    let y_ticks = if let Some(custom) = &axes.y_axis.custom_ticks {
+        custom_tick_set(custom, y_min, y_max)
+    } else if let Some(base) = axes.y_axis.log_base {
+        log_ticks(y_min, y_max, base)
+    } else {
+        generate_ticks(y_min, y_max, 5)
+    };
+
+    // Determine title
+    let title = axes.title.as_deref().or(super_title);
+
+    // Generate secondary axis ticks if any series uses them
+    let has_y2 = axes.y2_axis.label.is_some()
+        || axes.y2_axis.custom_ticks.is_some()
+        || !matches!(axes.y2_axis.range_min, AutoOption::Auto);
+    let has_x2 = axes.x2_axis.label.is_some()
+        || axes.x2_axis.custom_ticks.is_some()
+        || !matches!(axes.x2_axis.range_min, AutoOption::Auto);
+
+    let y2_ticks = if has_y2 {
+        let (_, _, y2_min, y2_max) = compute_secondary_ranges(axes);
+        let y2_min = match &axes.y2_axis.range_min {
+            AutoOption::Fix(v) => *v,
+            AutoOption::Auto => y2_min,
+        };
+        let y2_max = match &axes.y2_axis.range_max {
+            AutoOption::Fix(v) => *v,
+            AutoOption::Auto => y2_max,
+        };
+        if let Some(custom) = &axes.y2_axis.custom_ticks {
+            Some(custom_tick_set(custom, y2_min, y2_max))
+        } else if let Some(base) = axes.y2_axis.log_base {
+            Some(log_ticks(y2_min, y2_max, base))
+        } else {
+            Some(generate_ticks(y2_min, y2_max, 5))
+        }
+    } else {
+        None
+    };
+
+    let x2_ticks = if has_x2 {
+        let (x2_min, x2_max, _, _) = compute_secondary_ranges(axes);
+        let x2_min = match &axes.x2_axis.range_min {
+            AutoOption::Fix(v) => *v,
+            AutoOption::Auto => x2_min,
+        };
+        let x2_max = match &axes.x2_axis.range_max {
+            AutoOption::Fix(v) => *v,
+            AutoOption::Auto => x2_max,
+        };
+        if let Some(custom) = &axes.x2_axis.custom_ticks {
+            Some(custom_tick_set(custom, x2_min, x2_max))
+        } else if let Some(base) = axes.x2_axis.log_base {
+            Some(log_ticks(x2_min, x2_max, base))
+        } else {
+            Some(generate_ticks(x2_min, x2_max, 6))
+        }
+    } else {
+        None
+    };
+
+    // Compute layout
+    let config = LayoutConfig {
+        total_width: width,
+        total_height: height,
+        title: title.map(String::from),
+        x_label: axes.x_axis.label.clone(),
+        y_label: axes.y_axis.label.clone(),
+        x2_label: axes.x2_axis.label.clone(),
+        y2_label: axes.y2_axis.label.clone(),
+        x2_ticks: x2_ticks.clone(),
+        y2_ticks: y2_ticks.clone(),
+    };
+    let layout = compute_layout(&config, &x_ticks, &y_ticks);
+
+    // Create coordinate mapper with cell-aligned pixel ranges
+    let (y_px_min, y_px_max) =
+        aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
+    let (x_px_min, x_px_max) =
+        aligned_x_pixel_range(layout.canvas_char_width, x_ticks.ticks.len());
+
+    let mapper = CoordinateMapper::with_pixel_ranges(
+        x_ticks.min,
+        x_ticks.max,
+        y_ticks.min,
+        y_ticks.max,
+        x_px_min,
+        x_px_max,
+        y_px_min,
+        y_px_max,
+    )
+    .with_reversal(axes.x_axis.reversed, axes.y_axis.reversed)
+    .with_log(axes.x_axis.log_base, axes.y_axis.log_base);
+
+    // Create canvas
+    let mut canvas = BrailleCanvas::new(layout.canvas_char_width, layout.canvas_char_height);
+
+    // Draw grid lines BEFORE data
+    draw_grids(&mut canvas, &mapper, &x_ticks, &y_ticks, axes);
+
+    // Draw series in rendering order: fills -> boxes -> error bars -> lines/points
+    draw_all_series(&mut canvas, &mapper, axes);
+
+    // Render frame and blit canvas
+    let mut text_grid = render_frame(&layout, &config, &x_ticks, &y_ticks);
+    text_grid.blit_braille(&canvas, layout.canvas_col, layout.canvas_row);
+
+    // Draw legend overlay
+    legend::draw_legend(
+        &mut text_grid,
+        &axes.series,
+        &axes.legend,
+        layout.canvas_col,
+        layout.canvas_row,
+        layout.canvas_char_width,
+        layout.canvas_char_height,
+    );
+
+    // Draw annotations
+    draw_annotations(&mut text_grid, axes, &mapper, &layout);
+
+    text_grid.render()
+}
+
+/// Compute auto data ranges across all series.
+fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
+    let mut x_min = f64::INFINITY;
+    let mut x_max = f64::NEG_INFINITY;
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+
+    for s in &axes.series {
+        for &x in s.x_range_values().iter() {
+            if x.is_finite() {
+                x_min = x_min.min(x);
+                x_max = x_max.max(x);
+            }
+        }
+        for &y in s.y_range_values().iter() {
+            if y.is_finite() {
+                y_min = y_min.min(y);
+                y_max = y_max.max(y);
+            }
+        }
+    }
+
+    // Handle degenerate cases
+    if !x_min.is_finite() || !x_max.is_finite() {
+        x_min = -1.0;
+        x_max = 1.0;
+    }
+    if !y_min.is_finite() || !y_max.is_finite() {
+        y_min = -1.0;
+        y_max = 1.0;
+    }
+    if (x_max - x_min).abs() < f64::EPSILON {
+        x_min -= 1.0;
+        x_max += 1.0;
+    }
+    if (y_max - y_min).abs() < f64::EPSILON {
+        y_min -= 1.0;
+        y_max += 1.0;
+    }
+
+    (x_min, x_max, y_min, y_max)
+}
+
+/// Compute data ranges for series that use secondary axes.
+/// Returns (x2_min, x2_max, y2_min, y2_max), falling back to primary ranges.
+fn compute_secondary_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
+    use crate::api::options::AxisPair;
+
+    let mut x_min = f64::INFINITY;
+    let mut x_max = f64::NEG_INFINITY;
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+
+    for s in &axes.series {
+        let axis_pair = s
+            .options()
+            .iter()
+            .find_map(|o| {
+                if let PlotOption::Axes(a) = o {
+                    Some(*a)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(AxisPair::X1Y1);
+
+        let uses_x2 = matches!(axis_pair, AxisPair::X2Y1 | AxisPair::X2Y2);
+        let uses_y2 = matches!(axis_pair, AxisPair::X1Y2 | AxisPair::X2Y2);
+
+        if uses_x2 {
+            for &x in s.x_range_values().iter() {
+                if x.is_finite() {
+                    x_min = x_min.min(x);
+                    x_max = x_max.max(x);
+                }
+            }
+        }
+        if uses_y2 {
+            for &y in s.y_range_values().iter() {
+                if y.is_finite() {
+                    y_min = y_min.min(y);
+                    y_max = y_max.max(y);
+                }
+            }
+        }
+    }
+
+    // Handle degenerate cases
+    if !x_min.is_finite() || !x_max.is_finite() {
+        x_min = -1.0;
+        x_max = 1.0;
+    }
+    if !y_min.is_finite() || !y_max.is_finite() {
+        y_min = -1.0;
+        y_max = 1.0;
+    }
+    if (x_max - x_min).abs() < f64::EPSILON {
+        x_min -= 1.0;
+        x_max += 1.0;
+    }
+    if (y_max - y_min).abs() < f64::EPSILON {
+        y_min -= 1.0;
+        y_max += 1.0;
+    }
+
+    (x_min, x_max, y_min, y_max)
+}
+
+/// Draw grid and minor grid lines.
+fn draw_grids(
+    canvas: &mut BrailleCanvas,
+    mapper: &CoordinateMapper,
+    x_ticks: &crate::layout::TickSet,
+    y_ticks: &crate::layout::TickSet,
+    axes: &Axes2D,
+) {
+    // Minor grid first (underneath major)
+    grid::draw_minor_grid(
+        canvas,
+        mapper,
+        x_ticks,
+        y_ticks,
+        axes.x_axis.minor_grid,
+        axes.y_axis.minor_grid,
+        axes.x_axis.minor_grid_color,
+        axes.y_axis.minor_grid_color,
+        axes.x_axis.minor_grid_dash.to_pattern(),
+        axes.y_axis.minor_grid_dash.to_pattern(),
+    );
+
+    grid::draw_grid(
+        canvas,
+        mapper,
+        x_ticks,
+        y_ticks,
+        axes.x_axis.grid,
+        axes.y_axis.grid,
+        axes.x_axis.grid_color,
+        axes.y_axis.grid_color,
+        axes.x_axis.grid_dash.to_pattern(),
+        axes.y_axis.grid_dash.to_pattern(),
+    );
+}
+
+/// Draw all series in proper rendering order.
+fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: &Axes2D) {
+    // Rendering order: fills -> boxes -> error bars -> lines -> points
+    // We make multiple passes to ensure correct layering.
+
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(s, SeriesData::FillBetween { .. }) {
+            draw_series(canvas, mapper, s, idx);
+        }
+    }
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(
+            s,
+            SeriesData::Boxes { .. } | SeriesData::BoxAndWhisker { .. }
+        ) {
+            draw_series(canvas, mapper, s, idx);
+        }
+    }
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(
+            s,
+            SeriesData::YErrorBars { .. }
+                | SeriesData::XErrorBars { .. }
+                | SeriesData::YErrorLines { .. }
+                | SeriesData::XErrorLines { .. }
+        ) {
+            draw_series(canvas, mapper, s, idx);
+        }
+    }
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(s, SeriesData::Lines { .. } | SeriesData::LinesPoints { .. }) {
+            draw_series(canvas, mapper, s, idx);
+        }
+    }
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(
+            s,
+            SeriesData::Points { .. } | SeriesData::LinesPoints { .. }
+        ) {
+            draw_series_points_pass(canvas, mapper, s, idx);
+        }
+    }
+}
+
+/// Resolve series color from options or palette.
+fn resolve_series_color(opts: &[PlotOption], series_idx: usize) -> TermColor {
+    opts.iter()
+        .find_map(|o| {
+            if let PlotOption::Color(c) = o {
+                Some(*c)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(PALETTE[series_idx % PALETTE.len()])
+}
+
+/// Resolve dash type from options.
+fn resolve_dash(opts: &[PlotOption]) -> DashType {
+    opts.iter()
+        .find_map(|o| {
+            if let PlotOption::LineStyle(d) = o {
+                Some(*d)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(DashType::Solid)
+}
+
+/// Resolve point symbol from options.
+fn resolve_point_symbol(opts: &[PlotOption]) -> PointSymbol {
+    opts.iter()
+        .find_map(|o| {
+            if let PlotOption::PointSymbol(p) = o {
+                Some(*p)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(PointSymbol::Dot)
+}
+
+/// Resolve box width fraction from options.
+fn resolve_box_width(opts: &[PlotOption]) -> f64 {
+    opts.iter()
+        .find_map(|o| {
+            if let PlotOption::BoxWidth(w) = o {
+                Some(*w)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0.8)
+}
+
+/// Map data arrays to pixel coordinates.
+fn map_to_pixels(mapper: &CoordinateMapper, x: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let len = x.len().min(y.len());
+    let mut px = Vec::with_capacity(len);
+    let mut py = Vec::with_capacity(len);
+    for i in 0..len {
+        let (pxi, pyi) = mapper.data_to_pixel(x[i], y[i]);
+        px.push(pxi);
+        py.push(pyi);
+    }
+    (px, py)
+}
+
+/// Draw a single series (non-points pass).
+fn draw_series(
+    canvas: &mut BrailleCanvas,
+    mapper: &CoordinateMapper,
+    series: &SeriesData,
+    idx: usize,
+) {
+    let color = resolve_series_color(series.options(), idx);
+
+    match series {
+        SeriesData::Lines { x, y, options } => {
+            let (px, py) = map_to_pixels(mapper, x, y);
+            let dash = resolve_dash(options);
+            lines::draw_lines(canvas, &px, &py, color, dash.to_pattern());
+        }
+        SeriesData::LinesPoints { x, y, options } => {
+            // Lines pass only
+            let (px, py) = map_to_pixels(mapper, x, y);
+            let dash = resolve_dash(options);
+            lines::draw_lines(canvas, &px, &py, color, dash.to_pattern());
+        }
+        SeriesData::Points { .. } => {
+            // Handled in points pass
+        }
+        SeriesData::Boxes { x, y, options } => {
+            let box_frac = resolve_box_width(options);
+            let (px, py) = map_to_pixels(mapper, x, y);
+
+            // Baseline at y=0 or axis min
+            let baseline_y = if mapper.data_y_min <= 0.0 && mapper.data_y_max >= 0.0 {
+                0.0
+            } else {
+                mapper.data_y_min
+            };
+            let (_, baseline_py) = mapper.data_to_pixel(0.0, baseline_y);
+
+            // Compute box width in pixels from data spacing
+            let box_width_px = if x.len() >= 2 {
+                let min_spacing = x
+                    .windows(2)
+                    .map(|w| (w[1] - w[0]).abs())
+                    .filter(|s| *s > f64::EPSILON)
+                    .fold(f64::INFINITY, f64::min);
+                let (px0, _) = mapper.data_to_pixel(0.0, 0.0);
+                let (px1, _) = mapper.data_to_pixel(min_spacing, 0.0);
+                (px1 - px0).abs() * box_frac
+            } else {
+                (canvas.pixel_width() as f64 * 0.1).max(2.0) * box_frac
+            };
+
+            boxes::draw_boxes(canvas, &px, &py, baseline_py, color, box_width_px);
+        }
+        SeriesData::FillBetween { x, y1, y2, .. } => {
+            let (px, py1) = map_to_pixels(mapper, x, y1);
+            let (_, py2) = map_to_pixels(mapper, x, y2);
+            fill::draw_fill_between(canvas, &px, &py1, &py2, color);
+        }
+        SeriesData::YErrorBars {
+            x, y_low, y_high, ..
+        } => {
+            let (px, _) = map_to_pixels(mapper, x, y_low);
+            let (_, py_low) = map_to_pixels(mapper, x, y_low);
+            let (_, py_high) = map_to_pixels(mapper, x, y_high);
+            error_bars::draw_y_error_bars(canvas, &px, &py_low, &py_high, color, 3);
+        }
+        SeriesData::XErrorBars {
+            x,
+            y,
+            x_low,
+            x_high,
+            ..
+        } => {
+            let (_, py) = map_to_pixels(mapper, x, y);
+            let (px_low, _) = map_to_pixels(mapper, x_low, y);
+            let (px_high, _) = map_to_pixels(mapper, x_high, y);
+            error_bars::draw_x_error_bars(canvas, &py, &px_low, &px_high, color, 3);
+        }
+        SeriesData::YErrorLines {
+            x,
+            y,
+            y_low,
+            y_high,
+            options,
+        } => {
+            // Draw error bars first, then lines through center
+            let (px, py) = map_to_pixels(mapper, x, y);
+            let (_, py_low) = map_to_pixels(mapper, x, y_low);
+            let (_, py_high) = map_to_pixels(mapper, x, y_high);
+            error_bars::draw_y_error_bars(canvas, &px, &py_low, &py_high, color, 3);
+            let dash = resolve_dash(options);
+            lines::draw_lines(canvas, &px, &py, color, dash.to_pattern());
+        }
+        SeriesData::XErrorLines {
+            x,
+            y,
+            x_low,
+            x_high,
+            options,
+        } => {
+            let (px, py) = map_to_pixels(mapper, x, y);
+            let (px_low, _) = map_to_pixels(mapper, x_low, y);
+            let (px_high, _) = map_to_pixels(mapper, x_high, y);
+            error_bars::draw_x_error_bars(canvas, &py, &px_low, &px_high, color, 3);
+            let dash = resolve_dash(options);
+            lines::draw_lines(canvas, &px, &py, color, dash.to_pattern());
+        }
+        SeriesData::BoxAndWhisker {
+            x,
+            min,
+            q1,
+            median,
+            q3,
+            max,
+            options,
+        } => {
+            let box_frac = resolve_box_width(options);
+            let (px, py_min) = map_to_pixels(mapper, x, min);
+            let (_, py_q1) = map_to_pixels(mapper, x, q1);
+            let (_, py_med) = map_to_pixels(mapper, x, median);
+            let (_, py_q3) = map_to_pixels(mapper, x, q3);
+            let (_, py_max) = map_to_pixels(mapper, x, max);
+
+            let box_width_px = if x.len() >= 2 {
+                let min_spacing = x
+                    .windows(2)
+                    .map(|w| (w[1] - w[0]).abs())
+                    .filter(|s| *s > f64::EPSILON)
+                    .fold(f64::INFINITY, f64::min);
+                let (px0, _) = mapper.data_to_pixel(0.0, 0.0);
+                let (px1, _) = mapper.data_to_pixel(min_spacing, 0.0);
+                (px1 - px0).abs() * box_frac
+            } else {
+                (canvas.pixel_width() as f64 * 0.1).max(2.0) * box_frac
+            };
+
+            box_whisker::draw_box_and_whisker(
+                canvas,
+                &px,
+                &py_min,
+                &py_q1,
+                &py_med,
+                &py_q3,
+                &py_max,
+                color,
+                box_width_px,
+            );
+        }
+    }
+}
+
+/// Points-only pass for Points and LinesPoints series.
+fn draw_series_points_pass(
+    canvas: &mut BrailleCanvas,
+    mapper: &CoordinateMapper,
+    series: &SeriesData,
+    idx: usize,
+) {
+    let color = resolve_series_color(series.options(), idx);
+    let symbol = resolve_point_symbol(series.options());
+
+    match series {
+        SeriesData::Points { x, y, .. } | SeriesData::LinesPoints { x, y, .. } => {
+            let (px, py) = map_to_pixels(mapper, x, y);
+            points::draw_points(canvas, &px, &py, color, symbol);
+        }
+        _ => {}
+    }
+}
+
+/// Draw text annotations on the grid.
+fn draw_annotations(
+    grid: &mut TextGrid,
+    axes: &Axes2D,
+    mapper: &CoordinateMapper,
+    layout: &Layout,
+) {
+    for ann in &axes.annotations {
+        let (col, row) = resolve_annotation_pos(&ann.position, mapper, layout);
+
+        let color = ann
+            .options
+            .iter()
+            .find_map(|o| {
+                if let crate::api::options::LabelOption::TextColor(c) = o {
+                    Some(*c)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(TermColor::Default);
+
+        grid.put_str(col, row, &ann.text, color);
+    }
+
+    // Draw arrows
+    for arrow in &axes.arrows {
+        let (from_col, from_row) = resolve_annotation_pos(&arrow.from, mapper, layout);
+        let (to_col, to_row) = resolve_annotation_pos(&arrow.to, mapper, layout);
+
+        // Draw arrow using simple line characters in the TextGrid
+        // For simplicity, draw horizontal/vertical lines with arrow head
+        let color = arrow.color;
+        if from_row == to_row {
+            // Horizontal arrow
+            let (left, right) = if from_col <= to_col {
+                (from_col, to_col)
+            } else {
+                (to_col, from_col)
+            };
+            for c in left..=right {
+                grid.put_char(c, from_row, '─', color);
+            }
+            if arrow.head {
+                if to_col > from_col {
+                    grid.put_char(to_col, to_row, '→', color);
+                } else {
+                    grid.put_char(to_col, to_row, '←', color);
+                }
+            }
+        } else if from_col == to_col {
+            // Vertical arrow
+            let (top, bottom) = if from_row <= to_row {
+                (from_row, to_row)
+            } else {
+                (to_row, from_row)
+            };
+            for r in top..=bottom {
+                grid.put_char(from_col, r, '│', color);
+            }
+            if arrow.head {
+                if to_row > from_row {
+                    grid.put_char(to_col, to_row, '↓', color);
+                } else {
+                    grid.put_char(to_col, to_row, '↑', color);
+                }
+            }
+        }
+        // Diagonal arrows: just mark endpoints for simplicity in terminal
+    }
+}
+
+/// Resolve a coordinate pair to grid (col, row).
+fn resolve_annotation_pos(
+    pos: &(
+        crate::api::options::Coordinate,
+        crate::api::options::Coordinate,
+    ),
+    mapper: &CoordinateMapper,
+    layout: &Layout,
+) -> (usize, usize) {
+    use crate::api::options::Coordinate;
+
+    let x_data = match pos.0 {
+        Coordinate::Graph(g) => mapper.data_x_min + g * (mapper.data_x_max - mapper.data_x_min),
+        Coordinate::Axis(v) | Coordinate::Axis2(v) => v,
+    };
+    let y_data = match pos.1 {
+        Coordinate::Graph(g) => mapper.data_y_min + g * (mapper.data_y_max - mapper.data_y_min),
+        Coordinate::Axis(v) | Coordinate::Axis2(v) => v,
+    };
+
+    let (px, py) = mapper.data_to_pixel(x_data, y_data);
+    // Convert pixel coords to character cell coords
+    let char_col = (px / 2.0).round() as usize;
+    let char_row = (py / 4.0).round() as usize;
+
+    (
+        layout.canvas_col + char_col.min(layout.canvas_char_width.saturating_sub(1)),
+        layout.canvas_row + char_row.min(layout.canvas_char_height.saturating_sub(1)),
+    )
+}
+
+/// Create a TickSet from custom tick positions.
+fn custom_tick_set(
+    ticks: &[(f64, String)],
+    data_min: f64,
+    data_max: f64,
+) -> crate::layout::TickSet {
+    let min = ticks.iter().map(|(v, _)| *v).fold(data_min, f64::min);
+    let max = ticks.iter().map(|(v, _)| *v).fold(data_max, f64::max);
+    let spacing = if ticks.len() >= 2 {
+        (max - min) / (ticks.len() - 1) as f64
+    } else {
+        max - min
+    };
+    crate::layout::TickSet {
+        min,
+        max,
+        spacing: if spacing.abs() < f64::EPSILON {
+            1.0
+        } else {
+            spacing
+        },
+        ticks: ticks.to_vec(),
+    }
+}
+
+/// Generate logarithmic ticks for a range.
+fn log_ticks(data_min: f64, data_max: f64, base: f64) -> crate::layout::TickSet {
+    let min_positive = if data_min <= 0.0 {
+        f64::EPSILON
+    } else {
+        data_min
+    };
+    let max_val = if data_max <= 0.0 { 1.0 } else { data_max };
+
+    let log_min = min_positive.log(base).floor() as i32;
+    let log_max = max_val.log(base).ceil() as i32;
+
+    let mut ticks = Vec::new();
+    for exp in log_min..=log_max {
+        let val = base.powi(exp);
+        let label = if !(1e-3..1e6).contains(&val) {
+            format!("{val:.1e}")
+        } else if val >= 1.0 {
+            format!("{val:.0}")
+        } else {
+            format!("{val}")
+        };
+        ticks.push((val, label));
+    }
+
+    if ticks.is_empty() {
+        ticks.push((1.0, "1".to_string()));
+    }
+
+    let tick_min = ticks.first().unwrap().0;
+    let tick_max = ticks.last().unwrap().0;
+
+    crate::layout::TickSet {
+        min: tick_min,
+        max: tick_max,
+        spacing: if ticks.len() >= 2 {
+            (tick_max - tick_min) / (ticks.len() - 1) as f64
+        } else {
+            1.0
+        },
+        ticks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::figure::Figure;
+    use crate::api::options::*;
+
+    #[test]
+    fn empty_figure_renders_empty() {
+        let fig = Figure::new();
+        assert!(fig.render().is_empty());
+    }
+
+    #[test]
+    fn simple_line_plot() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("Test Line");
+            let xs: Vec<f64> = (0..=10).map(|i| i as f64).collect();
+            let ys: Vec<f64> = xs.iter().map(|x| x * x).collect();
+            ax.lines(
+                xs.iter().copied(),
+                ys.iter().copied(),
+                &[PlotOption::Caption("x^2".into())],
+            );
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+        assert!(result.contains("Test Line"));
+    }
+
+    #[test]
+    fn points_plot() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            let xs = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+            let ys = vec![1.0, 4.0, 2.0, 5.0, 3.0];
+            ax.points(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn boxes_plot() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            let xs = vec![1.0, 2.0, 3.0];
+            let ys = vec![5.0, 3.0, 7.0];
+            ax.boxes(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn manual_range() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_x_range(AutoOption::Fix(0.0), AutoOption::Fix(100.0));
+            ax.set_y_range(AutoOption::Fix(-10.0), AutoOption::Fix(10.0));
+            let xs = vec![10.0, 50.0, 90.0];
+            let ys = vec![5.0, -5.0, 8.0];
+            ax.lines(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn log_scale_plot() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_y_log(Some(10.0));
+            let xs = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+            let ys = vec![1.0, 10.0, 100.0, 1000.0, 10000.0];
+            ax.lines(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn display_trait() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(40, 10);
+        {
+            let ax = fig.axes2d();
+            let xs = vec![0.0, 1.0];
+            let ys = vec![0.0, 1.0];
+            ax.lines(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        let s = format!("{fig}");
+        assert!(!s.is_empty());
+    }
+}

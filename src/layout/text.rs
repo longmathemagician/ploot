@@ -20,10 +20,12 @@ impl TextGrid {
         }
     }
 
+    /// Grid width in characters.
     pub fn width(&self) -> usize {
         self.width
     }
 
+    /// Grid height in rows.
     pub fn height(&self) -> usize {
         self.height
     }

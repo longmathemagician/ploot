@@ -33,10 +33,12 @@ impl BrailleCanvas {
         self.char_height * 4
     }
 
+    /// Character width of the canvas.
     pub fn char_width(&self) -> usize {
         self.char_width
     }
 
+    /// Character height of the canvas.
     pub fn char_height(&self) -> usize {
         self.char_height
     }

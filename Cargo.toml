@@ -9,7 +9,7 @@ keywords = ["math"]
 categories = ["mathematics", "science"]
 authors = ["Stephen Gibbel <steve@gibbel.us>"]
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]

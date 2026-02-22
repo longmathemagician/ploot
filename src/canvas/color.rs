@@ -1,13 +1,21 @@
 /// Terminal colors for Braille canvas rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TermColor {
+    /// No explicit color (uses terminal default).
     Default,
+    /// Blue (ANSI 34).
     Blue,
+    /// Red (ANSI 31).
     Red,
+    /// Green (ANSI 32).
     Green,
+    /// Yellow (ANSI 33).
     Yellow,
+    /// Cyan (ANSI 36).
     Cyan,
+    /// Magenta (ANSI 35).
     Magenta,
+    /// White (ANSI 37).
     White,
 }
 
@@ -23,6 +31,23 @@ pub const PALETTE: [TermColor; 7] = [
 ];
 
 impl TermColor {
+    /// Parse a color name string into a TermColor.
+    ///
+    /// Supports: "red", "green", "blue", "yellow", "cyan", "magenta", "white", "default".
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "red" => Some(TermColor::Red),
+            "green" => Some(TermColor::Green),
+            "blue" => Some(TermColor::Blue),
+            "yellow" => Some(TermColor::Yellow),
+            "cyan" => Some(TermColor::Cyan),
+            "magenta" | "purple" => Some(TermColor::Magenta),
+            "white" => Some(TermColor::White),
+            "default" | "none" => Some(TermColor::Default),
+            _ => None,
+        }
+    }
+
     /// Returns the ANSI escape sequence to set this foreground color.
     pub fn ansi_fg(self) -> &'static str {
         match self {
@@ -110,8 +135,14 @@ mod tests {
 
     #[test]
     fn mix_is_commutative() {
-        assert_eq!(TermColor::Blue.mix(TermColor::Red), TermColor::Red.mix(TermColor::Blue));
-        assert_eq!(TermColor::Green.mix(TermColor::Red), TermColor::Red.mix(TermColor::Green));
+        assert_eq!(
+            TermColor::Blue.mix(TermColor::Red),
+            TermColor::Red.mix(TermColor::Blue)
+        );
+        assert_eq!(
+            TermColor::Green.mix(TermColor::Red),
+            TermColor::Red.mix(TermColor::Green)
+        );
     }
 
     #[test]

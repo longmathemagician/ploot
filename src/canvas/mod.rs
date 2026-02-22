@@ -1,4 +1,11 @@
+//! Braille canvas and color primitives.
+//!
+//! Provides [`BrailleCanvas`] for 2×4 sub-pixel rendering using Unicode Braille
+//! characters (U+2800–U+28FF), plus [`TermColor`] and [`DashPattern`] types.
+
+/// [`BrailleCanvas`] implementation.
 pub mod braille;
+/// Terminal color types and palette.
 pub mod color;
 
 pub use braille::BrailleCanvas;
