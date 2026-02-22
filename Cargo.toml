@@ -1,0 +1,15 @@
+[package]
+name = "ploot"
+description = "A terminal plotting library."
+license = "Apache-2.0"
+homepage = "https://github.com/longmathemagician/ploot"
+documentation = "https://docs.rs/ploot/latest/"
+repository = "https://github.com/longmathemagician/ploot"
+keywords = ["math"]
+categories = ["mathematics", "science"]
+authors = ["Stephen Gibbel <steve@gibbel.us>"]
+readme = "README.md"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
