@@ -52,7 +52,7 @@ pub fn generate_ticks(data_min: f64, data_max: f64, max_ticks: usize) -> TickSet
         };
     }
 
-    let range = nice_number(data_max - data_min, false);
+    let range = nice_number(data_max - data_min, true);
     let spacing = nice_number(range / (max_ticks - 1) as f64, true);
 
     let tick_min = (data_min / spacing).floor() * spacing;

@@ -28,6 +28,15 @@ impl TextGrid {
         self.height
     }
 
+    /// Returns the character at the given position, or ' ' if out of bounds.
+    pub fn char_at(&self, col: usize, row: usize) -> char {
+        if col < self.width && row < self.height {
+            self.chars[row * self.width + col]
+        } else {
+            ' '
+        }
+    }
+
     /// Sets a character at the given position.
     pub fn put_char(&mut self, col: usize, row: usize, ch: char, color: TermColor) {
         if col < self.width && row < self.height {

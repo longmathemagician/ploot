@@ -1,7 +1,6 @@
 use crate::canvas::color::TermColor;
 use crate::layout::nice_numbers::TickSet;
 use crate::layout::text::TextGrid;
-use crate::transform::CoordinateMapper;
 
 /// Configuration for the layout engine.
 pub struct LayoutConfig {
@@ -104,7 +103,6 @@ pub fn render_frame(
     config: &LayoutConfig,
     x_ticks: &TickSet,
     y_ticks: &TickSet,
-    mapper: &CoordinateMapper,
 ) -> TextGrid {
     let mut grid = TextGrid::new(config.total_width, config.total_height);
 
@@ -140,44 +138,55 @@ pub fn render_frame(
         grid.put_char(border_right, r, '│', TermColor::Default);
     }
 
-    // Y-axis ticks
+    // Y-axis ticks — interpolate directly on the left border
+    let y_border_span = (border_bottom - border_top) as f64;
+    let y_tick_range = y_ticks.max - y_ticks.min;
     for (val, label) in &y_ticks.ticks {
-        let (_, py) = mapper.data_to_pixel(0.0, *val);
-        // Convert pixel coordinate to character row within canvas
-        let char_row = (py / 4.0).round() as isize;
-        let grid_row = layout.canvas_row as isize + char_row;
-        if grid_row >= layout.canvas_row as isize
-            && grid_row <= (layout.canvas_row + layout.canvas_char_height) as isize
-        {
-            let grid_row = grid_row as usize;
-            // Right-align the label just before the border
+        let t = if y_tick_range.abs() < f64::EPSILON {
+            0.5
+        } else {
+            (val - y_ticks.min) / y_tick_range
+        };
+        // Higher values at top (lower row numbers)
+        let grid_row = border_bottom - (t * y_border_span).round() as usize;
+        if grid_row >= border_top && grid_row <= border_bottom {
             let label_end = layout.y_tick_col_end;
             grid.put_str_right_aligned(label_end, grid_row, label, TermColor::Default);
-            // Tick mark on the border (use combined char at corner)
-            if grid_row == border_bottom {
-                grid.put_char(border_left, grid_row, '┴', TermColor::Default);
+            let tick_char = if grid_row == border_top {
+                '┬' // corner: left (tick) + right (top border) + down (left border)
+            } else if grid_row == border_bottom {
+                '┴' // corner: left (tick) + right (bottom border) + up (left border)
             } else {
-                grid.put_char(border_left, grid_row, '┤', TermColor::Default);
-            }
+                '┤' // mid: up + down (left border) + left (tick)
+            };
+            grid.put_char(border_left, grid_row, tick_char, TermColor::Default);
         }
     }
 
-    // X-axis ticks
+    // X-axis ticks — interpolate directly on the bottom border
+    let x_border_span = (border_right - border_left) as f64;
+    let x_tick_range = x_ticks.max - x_ticks.min;
     for (val, label) in &x_ticks.ticks {
-        let (px, _) = mapper.data_to_pixel(*val, 0.0);
-        // Convert pixel coordinate to character column within canvas
-        let char_col = (px / 2.0).round() as isize;
-        let grid_col = layout.canvas_col as isize + char_col;
-        if grid_col >= layout.canvas_col as isize
-            && grid_col <= (layout.canvas_col + layout.canvas_char_width) as isize
-        {
-            let grid_col = grid_col as usize;
-            // Tick mark on the border (use combined char at corner)
-            if grid_col == border_right {
-                grid.put_char(grid_col, border_bottom, '┤', TermColor::Default);
+        let t = if x_tick_range.abs() < f64::EPSILON {
+            0.5
+        } else {
+            (val - x_ticks.min) / x_tick_range
+        };
+        let grid_col = border_left + (t * x_border_span).round() as usize;
+        if grid_col >= border_left && grid_col <= border_right {
+            // Check if a y-tick already placed a mark at this corner
+            let has_y_tick = grid_col == border_left
+                && grid.char_at(grid_col, border_bottom) != '└';
+            let tick_char = if has_y_tick {
+                '┼' // both axes have ticks here
+            } else if grid_col == border_left {
+                '├' // corner: up (left border) + right (bottom border) + down (tick)
+            } else if grid_col == border_right {
+                '┤' // corner: up (right border) + left (bottom border) + down (tick)
             } else {
-                grid.put_char(grid_col, border_bottom, '┬', TermColor::Default);
-            }
+                '┬' // mid: left + right (bottom border) + down (tick)
+            };
+            grid.put_char(grid_col, border_bottom, tick_char, TermColor::Default);
             // Center the label below
             let label_len = label.len();
             let label_start = grid_col.saturating_sub(label_len / 2);
@@ -272,22 +281,14 @@ mod tests {
             y_label: None,
         };
         let layout = compute_layout(&config, &x_ticks, &y_ticks);
-        let mapper = CoordinateMapper::new(
-            x_ticks.min,
-            x_ticks.max,
-            y_ticks.min,
-            y_ticks.max,
-            layout.canvas_char_width * 2,
-            layout.canvas_char_height * 4,
-        );
-        let grid = render_frame(&layout, &config, &x_ticks, &y_ticks, &mapper);
+        let grid = render_frame(&layout, &config, &x_ticks, &y_ticks);
         let s = grid.render_plain();
 
-        assert!(s.contains('┌'));
+        // Corners may become tick chars (┬/┴/├/┤/┼) when ticks land at edges
+        assert!(s.contains('┌') || s.contains('┬'));
         assert!(s.contains('┐'));
-        // Bottom corners may be replaced by combined tick+corner chars
-        assert!(s.contains('└') || s.contains('┴'));
-        assert!(s.contains('┘') || s.contains('┤'));
+        assert!(s.contains('├') || s.contains('└') || s.contains('┼'));
+        assert!(s.contains('┤') || s.contains('┘'));
         assert!(s.contains('─'));
         assert!(s.contains('│'));
     }
@@ -303,15 +304,7 @@ mod tests {
             y_label: None,
         };
         let layout = compute_layout(&config, &x_ticks, &y_ticks);
-        let mapper = CoordinateMapper::new(
-            x_ticks.min,
-            x_ticks.max,
-            y_ticks.min,
-            y_ticks.max,
-            layout.canvas_char_width * 2,
-            layout.canvas_char_height * 4,
-        );
-        let grid = render_frame(&layout, &config, &x_ticks, &y_ticks, &mapper);
+        let grid = render_frame(&layout, &config, &x_ticks, &y_ticks);
         let s = grid.render_plain();
         assert!(s.contains("My Title"));
     }

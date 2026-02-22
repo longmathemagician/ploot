@@ -72,14 +72,6 @@ pub fn quick_plot_multi(
         y_max += 1.0;
     }
 
-    // Add 5% padding
-    let x_pad = (x_max - x_min) * 0.05;
-    let y_pad = (y_max - y_min) * 0.05;
-    x_min -= x_pad;
-    x_max += x_pad;
-    y_min -= y_pad;
-    y_max += y_pad;
-
     // Generate ticks
     let x_ticks = generate_ticks(x_min, x_max, 6);
     let y_ticks = generate_ticks(y_min, y_max, 5);
@@ -94,7 +86,7 @@ pub fn quick_plot_multi(
     };
     let layout = compute_layout(&config, &x_ticks, &y_ticks);
 
-    // Use tick-rounded ranges for the mapper
+    // Map tick range to the full viewport
     let mapper = CoordinateMapper::new(
         x_ticks.min,
         x_ticks.max,
@@ -143,7 +135,7 @@ pub fn quick_plot_multi(
     }
 
     // Render frame and blit canvas
-    let mut grid = render_frame(&layout, &config, &x_ticks, &y_ticks, &mapper);
+    let mut grid = render_frame(&layout, &config, &x_ticks, &y_ticks);
     grid.blit_braille(&canvas, layout.canvas_col, layout.canvas_row);
 
     grid.render()
@@ -174,8 +166,8 @@ mod tests {
         let xs = vec![0.0, 1.0, 2.0];
         let ys = vec![0.0, 1.0, 4.0];
         let result = quick_plot(&xs, &ys, None, None, None, 60, 15);
-        assert!(result.contains('┌'));
-        // Bottom-right corner may be replaced by combined tick+corner char
+        // Corners may become tick chars when ticks land at edges
+        assert!(result.contains('┌') || result.contains('┬'));
         assert!(result.contains('┘') || result.contains('┤'));
     }
 
