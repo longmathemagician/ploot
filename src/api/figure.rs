@@ -1,8 +1,17 @@
 use super::axes::Axes2D;
+use super::axes3d::Axes3D;
 
-/// Top-level figure that owns one or more `Axes2D` subplots.
+/// Discriminated union for 2D and 3D axes types.
+pub(crate) enum AxesType {
+    /// Standard 2D plot axes.
+    TwoD(Box<Axes2D>),
+    /// 3D surface/wireframe axes.
+    ThreeD(Box<Axes3D>),
+}
+
+/// Top-level figure that owns one or more subplot axes.
 pub struct Figure {
-    pub(crate) axes: Vec<Axes2D>,
+    pub(crate) axes: Vec<AxesType>,
     pub(crate) title: Option<String>,
     pub(crate) multiplot: Option<(usize, usize)>,
     pub(crate) width: usize,
@@ -81,10 +90,22 @@ impl Figure {
         self
     }
 
-    /// Create a new Axes2D subplot and return a mutable reference to it.
+    /// Create a new 2D axes subplot and return a mutable reference to it.
     pub fn axes2d(&mut self) -> &mut Axes2D {
-        self.axes.push(Axes2D::new());
-        self.axes.last_mut().unwrap()
+        self.axes.push(AxesType::TwoD(Box::new(Axes2D::new())));
+        match self.axes.last_mut().unwrap() {
+            AxesType::TwoD(ax) => ax,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Create a new 3D axes subplot and return a mutable reference to it.
+    pub fn axes3d(&mut self) -> &mut Axes3D {
+        self.axes.push(AxesType::ThreeD(Box::new(Axes3D::new())));
+        match self.axes.last_mut().unwrap() {
+            AxesType::ThreeD(ax) => ax,
+            _ => unreachable!(),
+        }
     }
 
     /// Render the figure to a string.

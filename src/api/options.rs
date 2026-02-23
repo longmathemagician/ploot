@@ -1,5 +1,6 @@
 use crate::canvas::DashPattern;
 use crate::canvas::color::TermColor;
+use crate::canvas::colormap::ColorMapType;
 
 /// Auto-or-fixed value for axis configuration.
 ///
@@ -131,6 +132,10 @@ pub enum PlotOption {
     BorderColor(TermColor),
     /// Box width as fraction of spacing (0.0-1.0).
     BoxWidth(f64),
+    /// Colormap for heatmap/surface rendering.
+    ColorMap(ColorMapType),
+    /// Number of auto-generated contour levels.
+    ContourLevels(usize),
 }
 
 /// Text alignment.

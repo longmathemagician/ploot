@@ -1,6 +1,7 @@
 use crate::canvas::PALETTE;
 use crate::canvas::color::TermColor;
 
+use super::grid::GridData;
 use super::options::{
     AutoOption, Coordinate, DashType, LabelOption, LegendOption, Placement, PlotOption, TickOption,
 };
@@ -544,6 +545,48 @@ impl Axes2D {
             median,
             q3,
             max,
+            options: options.to_vec(),
+        });
+        self
+    }
+
+    /// Add a heatmap series from grid data.
+    pub fn heatmap(&mut self, grid: GridData, options: &[PlotOption]) -> &mut Self {
+        let _color = self.resolve_color(options);
+        self.series.push(SeriesData::Heatmap {
+            grid,
+            options: options.to_vec(),
+        });
+        self
+    }
+
+    /// Add a contour series from grid data.
+    pub fn contour(
+        &mut self,
+        grid: GridData,
+        levels: Option<&[f64]>,
+        options: &[PlotOption],
+    ) -> &mut Self {
+        let _color = self.resolve_color(options);
+        self.series.push(SeriesData::Contour {
+            grid,
+            levels: levels.map(|l| l.to_vec()),
+            options: options.to_vec(),
+        });
+        self
+    }
+
+    /// Add a combined heatmap + contour overlay.
+    pub fn heatmap_contour(
+        &mut self,
+        grid: GridData,
+        levels: Option<&[f64]>,
+        options: &[PlotOption],
+    ) -> &mut Self {
+        let _color = self.resolve_color(options);
+        self.series.push(SeriesData::HeatmapContour {
+            grid,
+            levels: levels.map(|l| l.to_vec()),
             options: options.to_vec(),
         });
         self

@@ -81,6 +81,8 @@ pub fn draw_legend(
                 | SeriesData::FillBetween { .. } => (true, false),
                 SeriesData::Points { .. } => (false, true),
                 SeriesData::LinesPoints { .. } => (true, true),
+                SeriesData::Heatmap { .. } | SeriesData::HeatmapContour { .. } => (true, false),
+                SeriesData::Contour { .. } => (true, false),
                 _ => (true, false),
             };
 

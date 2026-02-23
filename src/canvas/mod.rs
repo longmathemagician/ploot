@@ -7,9 +7,15 @@
 pub mod braille;
 /// Terminal color types and palette.
 pub mod color;
+/// Colormap for scalar-to-color mapping.
+pub mod colormap;
+/// Depth-buffered canvas for z-correct rendering.
+pub mod depth;
 
 pub use braille::BrailleCanvas;
 pub use color::{PALETTE, TermColor};
+pub use colormap::{ColorDensity, ColorMapType, map_color};
+pub use depth::DepthCanvas;
 
 /// Braille bit positions: `PIXEL_MAP[y % 4][x % 2]` gives the bit mask for a sub-pixel.
 pub const PIXEL_MAP: [[u8; 2]; 4] = [

@@ -24,7 +24,9 @@ fn main() {
     println!();
 
     // Demo 2: New Figure/Axes2D builder API
-    use ploot::{AutoOption, DashType, Figure, PlotOption, PointSymbol};
+    use ploot::{
+        AutoOption, ColorMapType, DashType, Figure, GridData, PlotOption, PointSymbol, SurfaceStyle,
+    };
 
     let mut fig = Figure::new();
     fig.set_terminal_size(80, 24);
@@ -80,6 +82,121 @@ fn main() {
             values.iter().copied(),
             &[PlotOption::Caption("sales".into())],
         );
+    }
+    fig.show();
+
+    println!();
+
+    // Demo 4: Heatmap — sin(x)*cos(y)
+    let grid = GridData::from_fn(
+        |x, y| x.sin() * y.cos(),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        40,
+        40,
+    );
+    let output = ploot::quick_heatmap(
+        grid,
+        Some("Heatmap: sin(x)*cos(y)"),
+        Some("x"),
+        Some("y"),
+        80,
+        24,
+    );
+    println!("{output}");
+
+    println!();
+
+    // Demo 5: Contour — Gaussian
+    let grid = GridData::from_fn(
+        |x, y| (-0.5 * (x * x + y * y)).exp(),
+        (-3.0, 3.0),
+        (-3.0, 3.0),
+        40,
+        40,
+    );
+    let output = ploot::quick_contour(grid, 8, Some("Contour: Gaussian"), 80, 24);
+    println!("{output}");
+
+    println!();
+
+    // Demo 6: Heatmap + Contour overlay
+    let grid = GridData::from_fn(
+        |x, y| x.sin() * y.cos(),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        40,
+        40,
+    );
+    let mut fig = Figure::new();
+    fig.set_terminal_size(80, 24);
+    {
+        let ax = fig.axes2d();
+        ax.set_title("Heatmap + Contour: sin(x)*cos(y)");
+        ax.set_x_label("x", &[]);
+        ax.set_y_label("y", &[]);
+        ax.heatmap_contour(grid, None, &[PlotOption::ContourLevels(10)]);
+    }
+    fig.show();
+
+    println!();
+
+    // Demo 7: 3D Wireframe — sin(sqrt(x^2+y^2))
+    let grid = GridData::from_fn(
+        |x, y| (x * x + y * y).sqrt().sin(),
+        (-4.0, 4.0),
+        (-4.0, 4.0),
+        25,
+        25,
+    );
+    let output = ploot::quick_surface(
+        grid,
+        Some("3D Wireframe: sin(sqrt(x^2+y^2))"),
+        80,
+        24,
+        35.0,
+        25.0,
+    );
+    println!("{output}");
+
+    println!();
+
+    // Demo 8: 3D Hidden-line surface
+    let grid = GridData::from_fn(
+        |x, y| x.sin() + y.cos(),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        (-std::f64::consts::PI, std::f64::consts::PI),
+        20,
+        20,
+    );
+    let mut fig = Figure::new();
+    fig.set_terminal_size(80, 24);
+    {
+        let ax = fig.axes3d();
+        ax.set_title("3D Hidden-Line: sin(x) + cos(y)");
+        ax.set_view(45.0, 30.0);
+        ax.surface(grid, SurfaceStyle::HiddenLine, &[]);
+    }
+    fig.show();
+
+    println!();
+
+    // Demo 9: 3D Filled surface
+    let grid = GridData::from_fn(
+        |x, y| (x * x + y * y).sqrt().sin(),
+        (-4.0, 4.0),
+        (-4.0, 4.0),
+        20,
+        20,
+    );
+    let mut fig = Figure::new();
+    fig.set_terminal_size(80, 24);
+    {
+        let ax = fig.axes3d();
+        ax.set_title("3D Filled: sin(sqrt(x^2+y^2))");
+        ax.set_view(30.0, 30.0);
+        ax.set_colormap(ColorMapType::Rainbow);
+        ax.surface(grid, SurfaceStyle::Filled, &[]);
     }
     fig.show();
 }

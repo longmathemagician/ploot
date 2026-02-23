@@ -4,27 +4,38 @@
 pub mod box_whisker;
 /// Bar chart renderer.
 pub mod boxes;
+/// Contour line renderer.
+pub mod contour;
 /// Error bar renderer.
 pub mod error_bars;
 /// Fill-between area renderer.
 pub mod fill;
 /// Grid line renderer.
 pub mod grid;
+/// Heatmap renderer.
+pub mod heatmap;
 /// Legend overlay renderer.
 pub mod legend;
 /// Line series renderer.
 pub mod lines;
 /// Point (scatter) renderer.
 pub mod points;
+/// 3D surface renderer.
+pub mod surface;
 
 use crate::api::axes::Axes2D;
-use crate::api::figure::Figure;
+use crate::api::axes3d::{Axes3D, SurfaceStyle};
+use crate::api::figure::{AxesType, Figure};
 use crate::api::options::{AutoOption, DashType, PlotOption, PointSymbol};
 use crate::api::series::SeriesData;
 use crate::canvas::color::TermColor;
+use crate::canvas::colormap::ColorMapType;
+use crate::canvas::depth::DepthCanvas;
 use crate::canvas::{BrailleCanvas, PALETTE};
 use crate::layout::text::TextGrid;
 use crate::layout::{Layout, LayoutConfig, compute_layout, generate_ticks, render_frame};
+use crate::transform::marching::auto_contour_levels;
+use crate::transform::projection::Projection;
 use crate::transform::{CoordinateMapper, aligned_x_pixel_range, aligned_y_pixel_range};
 
 /// Render a complete Figure to a string.
@@ -37,8 +48,21 @@ pub fn render_figure(fig: &Figure) -> String {
         Some((rows, cols)) => render_multiplot(fig, rows, cols),
         None => {
             // Single plot — use first axes
-            render_single_axes(&fig.axes[0], fig.title.as_deref(), fig.width, fig.height)
+            render_single_axes_type(&fig.axes[0], fig.title.as_deref(), fig.width, fig.height)
         }
+    }
+}
+
+/// Dispatch rendering for either 2D or 3D axes.
+fn render_single_axes_type(
+    axes_type: &AxesType,
+    super_title: Option<&str>,
+    width: usize,
+    height: usize,
+) -> String {
+    match axes_type {
+        AxesType::TwoD(axes) => render_single_axes(axes, super_title, width, height),
+        AxesType::ThreeD(axes) => render_single_axes3d(axes, super_title, width, height),
     }
 }
 
@@ -48,47 +72,7 @@ fn render_multiplot(fig: &Figure, rows: usize, cols: usize) -> String {
     let sub_height = fig.height.saturating_sub(title_rows) / rows.max(1);
     let sub_width = fig.width / cols.max(1);
 
-    let mut master = TextGrid::new(fig.width, fig.height);
-
-    // Draw super-title
-    if let Some(title) = &fig.title {
-        master.put_str_centered(0, fig.width, 0, title, TermColor::Default);
-    }
-
-    for (i, axes) in fig.axes.iter().enumerate() {
-        let grid_row = i / cols;
-        let grid_col = i % cols;
-        if grid_row >= rows {
-            break;
-        }
-
-        let rendered = render_single_axes(axes, None, sub_width, sub_height);
-
-        // Blit into master grid at the subplot position
-        let offset_col = grid_col * sub_width;
-        let offset_row = title_rows + grid_row * sub_height;
-
-        for (line_idx, line) in rendered.lines().enumerate() {
-            let row = offset_row + line_idx;
-            if row >= fig.height {
-                break;
-            }
-            let mut col = offset_col;
-            for ch in line.chars() {
-                if ch == '\x1b' {
-                    // Skip ANSI — we're blitting plain chars here
-                    continue;
-                }
-                if col < fig.width {
-                    master.put_char(col, row, ch, TermColor::Default);
-                }
-                col += 1;
-            }
-        }
-    }
-
-    // Re-render multiplot with color — render each subplot independently and use
-    // direct text blitting for now
+    // Render multiplot with color — render each subplot independently
     let mut output = String::new();
     if let Some(title) = &fig.title {
         let pad = fig.width.saturating_sub(title.len()) / 2;
@@ -114,7 +98,7 @@ fn render_multiplot(fig: &Figure, rows: usize, cols: usize) -> String {
         // Render each subplot
         let rendered: Vec<String> = axes_in_row
             .iter()
-            .map(|axes| render_single_axes(axes, None, sub_width, sub_height))
+            .map(|axes| render_single_axes_type(axes, None, sub_width, sub_height))
             .collect();
 
         // Interleave lines from each subplot
@@ -178,20 +162,32 @@ fn render_single_axes(
     };
 
     // Generate ticks
-    let x_ticks = if let Some(custom) = &axes.x_axis.custom_ticks {
+    let mut x_ticks = if let Some(custom) = &axes.x_axis.custom_ticks {
         custom_tick_set(custom, x_min, x_max)
     } else if let Some(base) = axes.x_axis.log_base {
         log_ticks(x_min, x_max, base)
     } else {
         generate_ticks(x_min, x_max, 6)
     };
-    let y_ticks = if let Some(custom) = &axes.y_axis.custom_ticks {
+    let mut y_ticks = if let Some(custom) = &axes.y_axis.custom_ticks {
         custom_tick_set(custom, y_min, y_max)
     } else if let Some(base) = axes.y_axis.log_base {
         log_ticks(y_min, y_max, base)
     } else {
         generate_ticks(y_min, y_max, 5)
     };
+
+    // For grid-based series (heatmaps, contours), use the exact data range
+    // so the grid fills the viewport edge-to-edge, with ticks slightly inward.
+    let has_grid = axes.series.iter().any(|s| s.grid_data().is_some());
+    if has_grid {
+        x_ticks.min = x_min;
+        x_ticks.max = x_max;
+        x_ticks.ticks.retain(|&(v, _)| v >= x_min && v <= x_max);
+        y_ticks.min = y_min;
+        y_ticks.max = y_max;
+        y_ticks.ticks.retain(|&(v, _)| v >= y_min && v <= y_max);
+    }
 
     // Determine title
     let title = axes.title.as_deref().or(super_title);
@@ -260,11 +256,23 @@ fn render_single_axes(
     };
     let layout = compute_layout(&config, &x_ticks, &y_ticks);
 
-    // Create coordinate mapper with cell-aligned pixel ranges
-    let (y_px_min, y_px_max) =
-        aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
-    let (x_px_min, x_px_max) =
-        aligned_x_pixel_range(layout.canvas_char_width, x_ticks.ticks.len());
+    // Create coordinate mapper with pixel ranges.
+    // For grid-based series (heatmaps, contours), use the full canvas extent
+    // so the grid fills edge-to-edge. For other series, align to tick positions.
+    let (y_px_min, y_px_max, x_px_min, x_px_max) = if has_grid {
+        (
+            0.0,
+            (layout.canvas_char_height * 4 - 1) as f64,
+            0.0,
+            (layout.canvas_char_width * 2 - 1) as f64,
+        )
+    } else {
+        let (y_min_px, y_max_px) =
+            aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
+        let (x_min_px, x_max_px) =
+            aligned_x_pixel_range(layout.canvas_char_width, x_ticks.ticks.len());
+        (y_min_px, y_max_px, x_min_px, x_max_px)
+    };
 
     let mapper = CoordinateMapper::with_pixel_ranges(
         x_ticks.min,
@@ -309,6 +317,217 @@ fn render_single_axes(
     text_grid.render()
 }
 
+/// Render a single 3D axes to a string.
+fn render_single_axes3d(
+    axes: &Axes3D,
+    super_title: Option<&str>,
+    width: usize,
+    height: usize,
+) -> String {
+    let title = axes.title.as_deref().or(super_title);
+
+    // Reserve space for title and labels
+    let title_rows = if title.is_some() { 1 } else { 0 };
+    let label_rows = if axes.x_label.is_some() || axes.y_label.is_some() {
+        1
+    } else {
+        0
+    };
+    let canvas_height = height.saturating_sub(title_rows + label_rows + 2).max(1); // 2 for border
+    let canvas_width = width.saturating_sub(2).max(1); // 2 for border
+
+    let mut text_grid = TextGrid::new(width, height);
+
+    // Title
+    if let Some(t) = title {
+        text_grid.put_str_centered(0, width, 0, t, TermColor::Default);
+    }
+
+    // Border
+    let border_top = title_rows;
+    let border_left = 0;
+    let border_right = canvas_width + 1;
+    let border_bottom = title_rows + canvas_height + 1;
+
+    text_grid.put_char(border_left, border_top, '┌', TermColor::Default);
+    text_grid.put_char(
+        border_right.min(width - 1),
+        border_top,
+        '┐',
+        TermColor::Default,
+    );
+    text_grid.put_char(
+        border_left,
+        border_bottom.min(height - 1),
+        '└',
+        TermColor::Default,
+    );
+    text_grid.put_char(
+        border_right.min(width - 1),
+        border_bottom.min(height - 1),
+        '┘',
+        TermColor::Default,
+    );
+    for c in (border_left + 1)..border_right.min(width) {
+        text_grid.put_char(c, border_top, '─', TermColor::Default);
+        text_grid.put_char(c, border_bottom.min(height - 1), '─', TermColor::Default);
+    }
+    for r in (border_top + 1)..border_bottom.min(height) {
+        text_grid.put_char(border_left, r, '│', TermColor::Default);
+        text_grid.put_char(border_right.min(width - 1), r, '│', TermColor::Default);
+    }
+
+    // Create projection
+    let projection = Projection::new(axes.azimuth, axes.elevation);
+
+    // Determine if we need a depth canvas
+    let needs_depth = axes
+        .surfaces
+        .iter()
+        .any(|s| matches!(s.style, SurfaceStyle::HiddenLine | SurfaceStyle::Filled));
+
+    // Canvas pixel dimensions
+    let cw = canvas_width;
+    let ch = canvas_height;
+    let pw = cw as f64 * 2.0;
+    let ph = ch as f64 * 4.0;
+
+    // Scaling: map projected unit cube to canvas
+    let scale = (pw * 0.8).min(ph * 0.8);
+    let offset_x = pw / 2.0;
+    let offset_y = ph / 2.0;
+
+    if needs_depth {
+        let mut dc = DepthCanvas::new(cw, ch);
+
+        for (idx, surf) in axes.surfaces.iter().enumerate() {
+            let color = axes.resolve_color(&surf.options, idx);
+            match surf.style {
+                SurfaceStyle::HiddenLine => {
+                    surface::draw_surface_hidden(
+                        &mut dc,
+                        &surf.grid,
+                        &projection,
+                        scale,
+                        scale,
+                        offset_x,
+                        offset_y,
+                        color,
+                    );
+                }
+                SurfaceStyle::Filled => {
+                    surface::draw_surface_filled(
+                        &mut dc,
+                        &surf.grid,
+                        &projection,
+                        scale,
+                        scale,
+                        offset_x,
+                        offset_y,
+                        axes.colormap,
+                    );
+                }
+                SurfaceStyle::Wireframe => {
+                    // Wireframe on a depth canvas: draw using the underlying canvas
+                    // We can't mix, so just draw wireframe without depth
+                    let canvas_ref = &dc;
+                    let _ = canvas_ref;
+                    // We'll draw wireframe after converting to canvas
+                }
+            }
+        }
+
+        // Blit depth canvas
+        text_grid.blit_braille(dc.canvas(), border_left + 1, border_top + 1);
+    } else {
+        let mut canvas = BrailleCanvas::new(cw, ch);
+
+        for (idx, surf) in axes.surfaces.iter().enumerate() {
+            let color = axes.resolve_color(&surf.options, idx);
+            if surf.style == SurfaceStyle::Wireframe {
+                surface::draw_surface_wireframe(
+                    &mut canvas,
+                    &surf.grid,
+                    &projection,
+                    scale,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    color,
+                );
+            }
+        }
+
+        text_grid.blit_braille(&canvas, border_left + 1, border_top + 1);
+    }
+
+    // Draw axis labels
+    if let Some(label) = &axes.x_label {
+        let label_row = border_bottom.min(height - 1) + 1;
+        if label_row < height {
+            text_grid.put_str_centered(0, width, label_row, label, TermColor::Default);
+        }
+    }
+
+    // Draw projected axis lines for reference
+    draw_3d_axis_lines(
+        &mut text_grid,
+        &projection,
+        scale,
+        offset_x,
+        offset_y,
+        border_left + 1,
+        border_top + 1,
+        cw,
+        ch,
+    );
+
+    text_grid.render()
+}
+
+/// Draw 3D axis reference lines (the 3 visible edges of the bounding cube).
+#[allow(clippy::too_many_arguments)]
+fn draw_3d_axis_lines(
+    grid: &mut TextGrid,
+    projection: &Projection,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    grid_col_offset: usize,
+    grid_row_offset: usize,
+    canvas_char_width: usize,
+    canvas_char_height: usize,
+) {
+    // Draw three axis lines from the origin corner (-0.5, -0.5, -0.5)
+    let origin = (-0.5_f64, -0.5_f64, -0.5_f64);
+    let x_end = (0.5, -0.5, -0.5);
+    let y_end = (-0.5, 0.5, -0.5);
+    let z_end = (-0.5, -0.5, 0.5);
+
+    let axes_data = [(origin, x_end), (origin, y_end), (origin, z_end)];
+    let labels = ["X", "Y", "Z"];
+
+    for (i, &(start, end)) in axes_data.iter().enumerate() {
+        let (_sx0, _sy0, _) = projection.project(start.0, start.1, start.2);
+        let (sx1, sy1, _) = projection.project(end.0, end.1, end.2);
+
+        let px1 = (sx1 * scale + offset_x) / 2.0;
+        let py1 = (-sy1 * scale + offset_y) / 4.0;
+
+        // Place label near the endpoint
+        let label_col = px1.round() as usize;
+        let label_row = py1.round() as usize;
+        if label_col < canvas_char_width && label_row < canvas_char_height {
+            grid.put_str(
+                grid_col_offset + label_col,
+                grid_row_offset + label_row,
+                labels[i],
+                TermColor::Default,
+            );
+        }
+    }
+}
+
 /// Compute auto data ranges across all series.
 fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
     let mut x_min = f64::INFINITY;
@@ -317,6 +536,14 @@ fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
     let mut y_max = f64::NEG_INFINITY;
 
     for s in &axes.series {
+        // Include grid data ranges
+        if let Some(grid) = s.grid_data() {
+            x_min = x_min.min(grid.x_min);
+            x_max = x_max.max(grid.x_max);
+            y_min = y_min.min(grid.y_min);
+            y_max = y_max.max(grid.y_max);
+        }
+
         for &x in s.x_range_values().iter() {
             if x.is_finite() {
                 x_min = x_min.min(x);
@@ -455,8 +682,24 @@ fn draw_grids(
 
 /// Draw all series in proper rendering order.
 fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: &Axes2D) {
-    // Rendering order: fills -> boxes -> error bars -> lines -> points
+    // Rendering order: heatmaps -> fills -> boxes -> error bars -> contours -> lines -> points
     // We make multiple passes to ensure correct layering.
+
+    // Heatmap pass (background layer)
+    for (idx, s) in axes.series.iter().enumerate() {
+        match s {
+            SeriesData::Heatmap { grid, options, .. } => {
+                let cmap = resolve_colormap(options);
+                heatmap::draw_heatmap(canvas, grid, mapper, cmap);
+            }
+            SeriesData::HeatmapContour { grid, options, .. } => {
+                let cmap = resolve_colormap(options);
+                heatmap::draw_heatmap(canvas, grid, mapper, cmap);
+            }
+            _ => {}
+        }
+        let _ = idx;
+    }
 
     for (idx, s) in axes.series.iter().enumerate() {
         if matches!(s, SeriesData::FillBetween { .. }) {
@@ -482,6 +725,48 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
             draw_series(canvas, mapper, s, idx);
         }
     }
+
+    // Contour pass (above error bars, below lines)
+    for (idx, s) in axes.series.iter().enumerate() {
+        match s {
+            SeriesData::Contour {
+                grid,
+                levels,
+                options,
+            } => {
+                let color = resolve_series_color(options, idx);
+                let resolved_levels = resolve_contour_levels(grid, levels.as_deref(), options);
+                let dash = resolve_dash(options);
+                contour::draw_contour(
+                    canvas,
+                    grid,
+                    mapper,
+                    &resolved_levels,
+                    Some(color),
+                    dash.to_pattern(),
+                );
+            }
+            SeriesData::HeatmapContour {
+                grid,
+                levels,
+                options,
+            } => {
+                let resolved_levels = resolve_contour_levels(grid, levels.as_deref(), options);
+                let dash = resolve_dash(options);
+                // Use White for contrast against the heatmap background
+                contour::draw_contour(
+                    canvas,
+                    grid,
+                    mapper,
+                    &resolved_levels,
+                    Some(TermColor::White),
+                    dash.to_pattern(),
+                );
+            }
+            _ => {}
+        }
+    }
+
     for (idx, s) in axes.series.iter().enumerate() {
         if matches!(s, SeriesData::Lines { .. } | SeriesData::LinesPoints { .. }) {
             draw_series(canvas, mapper, s, idx);
@@ -495,6 +780,41 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
             draw_series_points_pass(canvas, mapper, s, idx);
         }
     }
+}
+
+/// Resolve colormap from options, defaulting to Heat.
+fn resolve_colormap(opts: &[PlotOption]) -> ColorMapType {
+    opts.iter()
+        .find_map(|o| {
+            if let PlotOption::ColorMap(c) = o {
+                Some(*c)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(ColorMapType::Heat)
+}
+
+/// Resolve contour levels: explicit > option-based > default 8 levels.
+fn resolve_contour_levels(
+    grid: &crate::api::grid::GridData,
+    explicit: Option<&[f64]>,
+    opts: &[PlotOption],
+) -> Vec<f64> {
+    if let Some(levels) = explicit {
+        return levels.to_vec();
+    }
+    let n = opts
+        .iter()
+        .find_map(|o| {
+            if let PlotOption::ContourLevels(n) = o {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8);
+    auto_contour_levels(grid.z_min(), grid.z_max(), n)
 }
 
 /// Resolve series color from options or palette.
@@ -709,6 +1029,10 @@ fn draw_series(
                 box_width_px,
             );
         }
+        // Grid-based types handled in dedicated passes
+        SeriesData::Heatmap { .. }
+        | SeriesData::Contour { .. }
+        | SeriesData::HeatmapContour { .. } => {}
     }
 }
 

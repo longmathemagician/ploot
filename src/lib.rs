@@ -63,9 +63,11 @@ pub mod transform;
 
 // Re-export the public API types
 pub use api::{
-    AlignType, AutoOption, Axes2D, AxisPair, Coordinate, DashType, Figure, LabelOption,
-    LegendOption, Placement, PlotOption, PointSymbol, SeriesData, TickOption,
+    AlignType, AutoOption, Axes2D, Axes3D, AxisPair, Coordinate, DashType, Figure, GridData,
+    LabelOption, LegendOption, Placement, PlotOption, PointSymbol, SeriesData, SurfaceStyle,
+    TickOption,
 };
+pub use canvas::colormap::ColorMapType;
 
 use canvas::{BrailleCanvas, PALETTE};
 use layout::{LayoutConfig, compute_layout, generate_ticks, render_frame};
@@ -185,8 +187,7 @@ pub fn quick_plot_multi(
     // Map tick range using cell-aligned pixel ranges
     let (y_px_min, y_px_max) =
         aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
-    let (x_px_min, x_px_max) =
-        aligned_x_pixel_range(layout.canvas_char_width, x_ticks.ticks.len());
+    let (x_px_min, x_px_max) = aligned_x_pixel_range(layout.canvas_char_width, x_ticks.ticks.len());
 
     let mapper = CoordinateMapper::with_pixel_ranges(
         x_ticks.min,
@@ -242,6 +243,108 @@ pub fn quick_plot_multi(
     grid.blit_braille(&canvas, layout.canvas_col, layout.canvas_row);
 
     grid.render()
+}
+
+/// Quick one-shot heatmap. Returns the rendered string.
+///
+/// # Examples
+///
+/// ```
+/// let grid = ploot::GridData::from_fn(
+///     |x, y| (x * x + y * y).sqrt(),
+///     (-2.0, 2.0), (-2.0, 2.0), 20, 20,
+/// );
+/// let output = ploot::quick_heatmap(grid, Some("Distance"), Some("x"), Some("y"), 60, 15);
+/// assert!(output.contains("Distance"));
+/// ```
+pub fn quick_heatmap(
+    grid: api::grid::GridData,
+    title: Option<&str>,
+    x_label: Option<&str>,
+    y_label: Option<&str>,
+    width: usize,
+    height: usize,
+) -> String {
+    let mut fig = Figure::new();
+    fig.set_terminal_size(width, height);
+    {
+        let ax = fig.axes2d();
+        if let Some(t) = title {
+            ax.set_title(t);
+        }
+        if let Some(l) = x_label {
+            ax.set_x_label(l, &[]);
+        }
+        if let Some(l) = y_label {
+            ax.set_y_label(l, &[]);
+        }
+        ax.heatmap(grid, &[]);
+    }
+    fig.render()
+}
+
+/// Quick one-shot contour plot. Returns the rendered string.
+///
+/// # Examples
+///
+/// ```
+/// let grid = ploot::GridData::from_fn(
+///     |x, y| x * x + y * y,
+///     (-2.0, 2.0), (-2.0, 2.0), 20, 20,
+/// );
+/// let output = ploot::quick_contour(grid, 8, Some("Circles"), 60, 15);
+/// assert!(output.contains("Circles"));
+/// ```
+pub fn quick_contour(
+    grid: api::grid::GridData,
+    n_levels: usize,
+    title: Option<&str>,
+    width: usize,
+    height: usize,
+) -> String {
+    let mut fig = Figure::new();
+    fig.set_terminal_size(width, height);
+    {
+        let ax = fig.axes2d();
+        if let Some(t) = title {
+            ax.set_title(t);
+        }
+        ax.contour(grid, None, &[PlotOption::ContourLevels(n_levels)]);
+    }
+    fig.render()
+}
+
+/// Quick one-shot 3D surface plot. Returns the rendered string.
+///
+/// # Examples
+///
+/// ```
+/// let grid = ploot::GridData::from_fn(
+///     |x, y| (x * x + y * y).sqrt().sin(),
+///     (-3.0, 3.0), (-3.0, 3.0), 30, 30,
+/// );
+/// let output = ploot::quick_surface(grid, Some("Surface"), 60, 20, 30.0, 30.0);
+/// assert!(output.contains("Surface"));
+/// ```
+pub fn quick_surface(
+    grid: api::grid::GridData,
+    title: Option<&str>,
+    width: usize,
+    height: usize,
+    azimuth: f64,
+    elevation: f64,
+) -> String {
+    let mut fig = Figure::new();
+    fig.set_terminal_size(width, height);
+    {
+        let ax = fig.axes3d();
+        if let Some(t) = title {
+            ax.set_title(t);
+        }
+        ax.set_view(azimuth, elevation);
+        ax.surface(grid, SurfaceStyle::Wireframe, &[]);
+    }
+    fig.render()
 }
 
 #[cfg(test)]
@@ -389,5 +492,144 @@ mod tests {
         let result = fig.render();
         assert!(result.contains("quadratic"));
         assert!(result.contains("linear"));
+    }
+
+    // Grid / heatmap / contour / surface integration tests
+
+    #[test]
+    fn heatmap_via_figure() {
+        let grid = GridData::from_fn(|x, y| x.sin() * y.cos(), (-3.0, 3.0), (-3.0, 3.0), 20, 20);
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("Heatmap");
+            ax.heatmap(grid, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("Heatmap"));
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn contour_via_figure() {
+        let grid = GridData::from_fn(|x, y| x * x + y * y, (-2.0, 2.0), (-2.0, 2.0), 20, 20);
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("Contour");
+            ax.contour(grid, None, &[PlotOption::ContourLevels(5)]);
+        }
+        let result = fig.render();
+        assert!(result.contains("Contour"));
+    }
+
+    #[test]
+    fn heatmap_contour_via_figure() {
+        let grid = GridData::from_fn(|x, y| x.sin() * y.cos(), (-3.0, 3.0), (-3.0, 3.0), 20, 20);
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 15);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("HeatContour");
+            ax.heatmap_contour(grid, None, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("HeatContour"));
+    }
+
+    #[test]
+    fn surface_wireframe_via_figure() {
+        let grid = GridData::from_fn(
+            |x, y| (x * x + y * y).sqrt().sin(),
+            (-3.0, 3.0),
+            (-3.0, 3.0),
+            20,
+            20,
+        );
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 20);
+        {
+            let ax = fig.axes3d();
+            ax.set_title("Wireframe");
+            ax.set_view(30.0, 30.0);
+            ax.surface(grid, SurfaceStyle::Wireframe, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("Wireframe"));
+    }
+
+    #[test]
+    fn surface_hidden_via_figure() {
+        let grid = GridData::from_fn(|x, y| x.sin() + y.cos(), (-3.0, 3.0), (-3.0, 3.0), 15, 15);
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 20);
+        {
+            let ax = fig.axes3d();
+            ax.set_title("Hidden");
+            ax.surface(grid, SurfaceStyle::HiddenLine, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("Hidden"));
+    }
+
+    #[test]
+    fn surface_filled_via_figure() {
+        let grid = GridData::from_fn(|x, y| x.sin() * y.cos(), (-3.0, 3.0), (-3.0, 3.0), 15, 15);
+        let mut fig = Figure::new();
+        fig.set_terminal_size(60, 20);
+        {
+            let ax = fig.axes3d();
+            ax.set_title("Filled");
+            ax.set_colormap(ColorMapType::Rainbow);
+            ax.surface(grid, SurfaceStyle::Filled, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("Filled"));
+    }
+
+    #[test]
+    fn quick_heatmap_produces_output() {
+        let grid = GridData::from_fn(|x, y| x + y, (0.0, 1.0), (0.0, 1.0), 10, 10);
+        let result = quick_heatmap(grid, Some("QH"), None, None, 60, 15);
+        assert!(result.contains("QH"));
+    }
+
+    #[test]
+    fn quick_contour_produces_output() {
+        let grid = GridData::from_fn(|x, y| x * x + y * y, (-1.0, 1.0), (-1.0, 1.0), 10, 10);
+        let result = quick_contour(grid, 5, Some("QC"), 60, 15);
+        assert!(result.contains("QC"));
+    }
+
+    #[test]
+    fn quick_surface_produces_output() {
+        let grid = GridData::from_fn(|x, y| x * y, (-1.0, 1.0), (-1.0, 1.0), 10, 10);
+        let result = quick_surface(grid, Some("QS"), 60, 20, 30.0, 30.0);
+        assert!(result.contains("QS"));
+    }
+
+    #[test]
+    fn mixed_multiplot_2d_and_3d() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(80, 24);
+        fig.set_multiplot_layout(1, 2);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("2D");
+            let xs = vec![0.0, 1.0, 2.0];
+            let ys = vec![0.0, 1.0, 4.0];
+            ax.lines(xs.iter().copied(), ys.iter().copied(), &[]);
+        }
+        {
+            let ax = fig.axes3d();
+            ax.set_title("3D");
+            let grid = GridData::from_fn(|x, y| x + y, (0.0, 1.0), (0.0, 1.0), 5, 5);
+            ax.surface(grid, SurfaceStyle::Wireframe, &[]);
+        }
+        let result = fig.render();
+        assert!(result.contains("2D"));
+        assert!(result.contains("3D"));
     }
 }

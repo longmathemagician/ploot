@@ -1,3 +1,4 @@
+use super::grid::GridData;
 use super::options::PlotOption;
 
 /// Data and configuration for a single plot series.
@@ -119,6 +120,31 @@ pub enum SeriesData {
         /// Per-series display options.
         options: Vec<PlotOption>,
     },
+    /// Heatmap — 2D grid rendered with color-mapped density.
+    Heatmap {
+        /// Grid data.
+        grid: GridData,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
+    /// Contour — isolines extracted from a 2D grid.
+    Contour {
+        /// Grid data.
+        grid: GridData,
+        /// Optional explicit contour levels.
+        levels: Option<Vec<f64>>,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
+    /// Combined heatmap + contour overlay.
+    HeatmapContour {
+        /// Grid data.
+        grid: GridData,
+        /// Optional explicit contour levels.
+        levels: Option<Vec<f64>>,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
 }
 
 impl SeriesData {
@@ -134,11 +160,14 @@ impl SeriesData {
             | SeriesData::XErrorBars { options, .. }
             | SeriesData::YErrorLines { options, .. }
             | SeriesData::XErrorLines { options, .. }
-            | SeriesData::BoxAndWhisker { options, .. } => options,
+            | SeriesData::BoxAndWhisker { options, .. }
+            | SeriesData::Heatmap { options, .. }
+            | SeriesData::Contour { options, .. }
+            | SeriesData::HeatmapContour { options, .. } => options,
         }
     }
 
-    /// Returns the x data for this series.
+    /// Returns the x data for this series (empty for grid-based types).
     pub fn x_data(&self) -> &[f64] {
         match self {
             SeriesData::Lines { x, .. }
@@ -151,10 +180,13 @@ impl SeriesData {
             | SeriesData::YErrorLines { x, .. }
             | SeriesData::XErrorLines { x, .. }
             | SeriesData::BoxAndWhisker { x, .. } => x,
+            SeriesData::Heatmap { .. }
+            | SeriesData::Contour { .. }
+            | SeriesData::HeatmapContour { .. } => &[],
         }
     }
 
-    /// Returns the primary y data for this series.
+    /// Returns the primary y data for this series (empty for grid-based types).
     pub fn y_data(&self) -> &[f64] {
         match self {
             SeriesData::Lines { y, .. }
@@ -167,6 +199,9 @@ impl SeriesData {
             | SeriesData::XErrorLines { y, .. } => y,
             SeriesData::FillBetween { y1, .. } => y1,
             SeriesData::BoxAndWhisker { median, .. } => median,
+            SeriesData::Heatmap { .. }
+            | SeriesData::Contour { .. }
+            | SeriesData::HeatmapContour { .. } => &[],
         }
     }
 
@@ -194,6 +229,9 @@ impl SeriesData {
                 v.extend_from_slice(max);
                 v
             }
+            SeriesData::Heatmap { .. }
+            | SeriesData::Contour { .. }
+            | SeriesData::HeatmapContour { .. } => Vec::new(),
         }
     }
 
@@ -206,7 +244,20 @@ impl SeriesData {
                 v.extend_from_slice(x_high);
                 v
             }
+            SeriesData::Heatmap { .. }
+            | SeriesData::Contour { .. }
+            | SeriesData::HeatmapContour { .. } => Vec::new(),
             _ => self.x_data().to_vec(),
+        }
+    }
+
+    /// Returns the grid data for grid-based series types.
+    pub fn grid_data(&self) -> Option<&GridData> {
+        match self {
+            SeriesData::Heatmap { grid, .. }
+            | SeriesData::Contour { grid, .. }
+            | SeriesData::HeatmapContour { grid, .. } => Some(grid),
+            _ => None,
         }
     }
 }
