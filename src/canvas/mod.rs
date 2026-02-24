@@ -11,11 +11,14 @@ pub mod color;
 pub mod colormap;
 /// Depth-buffered canvas for z-correct rendering.
 pub mod depth;
+/// Ordered dithering for smooth density gradients.
+pub mod dither;
 
 pub use braille::BrailleCanvas;
 pub use color::{PALETTE, TermColor};
 pub use colormap::{ColorDensity, ColorMapType, map_color};
 pub use depth::DepthCanvas;
+pub use dither::fill_cell_dithered;
 
 /// Braille bit positions: `PIXEL_MAP[y % 4][x % 2]` gives the bit mask for a sub-pixel.
 pub const PIXEL_MAP: [[u8; 2]; 4] = [
@@ -62,6 +65,26 @@ impl DashPattern {
             acc += len;
             if pos < acc {
                 return i % 2 == 0; // even index = on, odd = off
+            }
+        }
+        true
+    }
+
+    /// Returns whether a pixel at the given Euclidean distance along a line should be drawn.
+    ///
+    /// Same logic as [`is_on`](Self::is_on) but operates on `f64` distance values,
+    /// preserving visual dash spacing regardless of line slope.
+    pub fn is_on_at_distance(&self, distance: f64) -> bool {
+        if self.segments.len() <= 1 {
+            return true; // solid
+        }
+        let total: f64 = self.segments.iter().map(|&s| s as f64).sum();
+        let pos = distance % total;
+        let mut acc = 0.0;
+        for (i, &len) in self.segments.iter().enumerate() {
+            acc += len as f64;
+            if pos < acc {
+                return i % 2 == 0;
             }
         }
         true

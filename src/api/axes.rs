@@ -690,6 +690,36 @@ impl Axes2D {
         self
     }
 
+    /// Set secondary y-axis tick options.
+    pub fn set_y2_ticks(&mut self, options: &[TickOption]) -> &mut Self {
+        self.y2_axis.tick_options = options.to_vec();
+        self
+    }
+
+    /// Set custom secondary y-axis tick positions and labels.
+    pub fn set_y2_ticks_custom(&mut self, ticks: &[(f64, &str)]) -> &mut Self {
+        self.y2_axis.custom_ticks = Some(ticks.iter().map(|(v, l)| (*v, l.to_string())).collect());
+        self
+    }
+
+    /// Enable secondary y-axis grid lines at major tick positions.
+    pub fn set_y2_grid(&mut self, enabled: bool) -> &mut Self {
+        self.y2_axis.grid = enabled;
+        self
+    }
+
+    /// Enable secondary y-axis minor grid lines.
+    pub fn set_y2_minor_grid(&mut self, enabled: bool) -> &mut Self {
+        self.y2_axis.minor_grid = enabled;
+        self
+    }
+
+    /// Reverse secondary y-axis direction.
+    pub fn set_y2_reverse(&mut self) -> &mut Self {
+        self.y2_axis.reversed = true;
+        self
+    }
+
     /// Enable x-axis grid lines at major tick positions.
     ///
     /// # Examples

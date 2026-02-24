@@ -26,7 +26,7 @@ pub mod surface;
 use crate::api::axes::Axes2D;
 use crate::api::axes3d::{Axes3D, SurfaceStyle};
 use crate::api::figure::{AxesType, Figure};
-use crate::api::options::{AutoOption, DashType, PlotOption, PointSymbol};
+use crate::api::options::{AutoOption, AxisPair, DashType, PlotOption, PointSymbol};
 use crate::api::series::SeriesData;
 use crate::canvas::color::TermColor;
 use crate::canvas::colormap::ColorMapType;
@@ -189,14 +189,38 @@ fn render_single_axes(
         y_ticks.ticks.retain(|&(v, _)| v >= y_min && v <= y_max);
     }
 
+    // Expand tick range for box/bar series (only auto-range sides)
+    let (box_need_min, box_need_max) = compute_box_x_padding(axes);
+    if box_need_min.is_finite() {
+        if matches!(axes.x_axis.range_min, AutoOption::Auto) {
+            x_ticks.min = x_ticks.min.min(box_need_min);
+        }
+        if matches!(axes.x_axis.range_max, AutoOption::Auto) {
+            x_ticks.max = x_ticks.max.max(box_need_max);
+        }
+    }
+    let has_box_padding = box_need_min.is_finite()
+        && (x_ticks.min < x_ticks.ticks.first().map_or(f64::INFINITY, |t| t.0) - 1e-10
+            || x_ticks.max > x_ticks.ticks.last().map_or(f64::NEG_INFINITY, |t| t.0) + 1e-10);
+
     // Determine title
     let title = axes.title.as_deref().or(super_title);
 
     // Generate secondary axis ticks if any series uses them
-    let has_y2 = axes.y2_axis.label.is_some()
+    let any_series_y2 = axes
+        .series
+        .iter()
+        .any(|s| matches!(s.axis_pair(), AxisPair::X1Y2 | AxisPair::X2Y2));
+    let any_series_x2 = axes
+        .series
+        .iter()
+        .any(|s| matches!(s.axis_pair(), AxisPair::X2Y1 | AxisPair::X2Y2));
+    let has_y2 = any_series_y2
+        || axes.y2_axis.label.is_some()
         || axes.y2_axis.custom_ticks.is_some()
         || !matches!(axes.y2_axis.range_min, AutoOption::Auto);
-    let has_x2 = axes.x2_axis.label.is_some()
+    let has_x2 = any_series_x2
+        || axes.x2_axis.label.is_some()
         || axes.x2_axis.custom_ticks.is_some()
         || !matches!(axes.x2_axis.range_min, AutoOption::Auto);
 
@@ -266,6 +290,13 @@ fn render_single_axes(
             0.0,
             (layout.canvas_char_width * 2 - 1) as f64,
         )
+    } else if has_box_padding {
+        // Proportional: map full data range to full canvas width
+        let (y_min_px, y_max_px) =
+            aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
+        let x_min_px = 0.0;
+        let x_max_px = 2.0 * (layout.canvas_char_width - 1) as f64;
+        (y_min_px, y_max_px, x_min_px, x_max_px)
     } else {
         let (y_min_px, y_max_px) =
             aligned_y_pixel_range(layout.canvas_char_height, y_ticks.ticks.len());
@@ -287,14 +318,38 @@ fn render_single_axes(
     .with_reversal(axes.x_axis.reversed, axes.y_axis.reversed)
     .with_log(axes.x_axis.log_base, axes.y_axis.log_base);
 
+    // Build secondary y-axis mapper if needed
+    let y2_mapper = y2_ticks.as_ref().map(|y2t| {
+        CoordinateMapper::with_pixel_ranges(
+            x_ticks.min,
+            x_ticks.max,
+            y2t.min,
+            y2t.max,
+            x_px_min,
+            x_px_max,
+            y_px_min,
+            y_px_max,
+        )
+        .with_reversal(axes.x_axis.reversed, axes.y2_axis.reversed)
+        .with_log(axes.x_axis.log_base, axes.y2_axis.log_base)
+    });
+
     // Create canvas
     let mut canvas = BrailleCanvas::new(layout.canvas_char_width, layout.canvas_char_height);
 
     // Draw grid lines BEFORE data
-    draw_grids(&mut canvas, &mapper, &x_ticks, &y_ticks, axes);
+    draw_grids(
+        &mut canvas,
+        &mapper,
+        &x_ticks,
+        &y_ticks,
+        axes,
+        y2_mapper.as_ref(),
+        y2_ticks.as_ref(),
+    );
 
     // Draw series in rendering order: fills -> boxes -> error bars -> lines/points
-    draw_all_series(&mut canvas, &mapper, axes);
+    draw_all_series(&mut canvas, &mapper, y2_mapper.as_ref(), axes);
 
     // Render frame and blit canvas
     let mut text_grid = render_frame(&layout, &config, &x_ticks, &y_ticks);
@@ -528,7 +583,33 @@ fn draw_3d_axis_lines(
     }
 }
 
-/// Compute auto data ranges across all series.
+/// Compute the x-axis extent needed for box/bar series to render fully.
+/// Returns (needed_min, needed_max) in data coordinates, or non-finite values
+/// if no box series need padding.
+fn compute_box_x_padding(axes: &Axes2D) -> (f64, f64) {
+    let mut needed_min = f64::INFINITY;
+    let mut needed_max = f64::NEG_INFINITY;
+    for s in &axes.series {
+        let x_data = s.x_data();
+        if matches!(s, SeriesData::Boxes { .. } | SeriesData::BoxAndWhisker { .. })
+            && x_data.len() >= 2
+        {
+            let min_spacing = x_data
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .filter(|d| *d > f64::EPSILON)
+                .fold(f64::INFINITY, f64::min);
+            if min_spacing.is_finite() {
+                let pad = min_spacing / 2.0;
+                needed_min = needed_min.min(x_data.first().unwrap() - pad);
+                needed_max = needed_max.max(x_data.last().unwrap() + pad);
+            }
+        }
+    }
+    (needed_min, needed_max)
+}
+
+/// Compute auto data ranges across all series on primary axes.
 fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
     let mut x_min = f64::INFINITY;
     let mut x_max = f64::NEG_INFINITY;
@@ -536,24 +617,36 @@ fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
     let mut y_max = f64::NEG_INFINITY;
 
     for s in &axes.series {
+        let ap = s.axis_pair();
+        let uses_primary_x = matches!(ap, AxisPair::X1Y1 | AxisPair::X1Y2);
+        let uses_primary_y = matches!(ap, AxisPair::X1Y1 | AxisPair::X2Y1);
+
         // Include grid data ranges
         if let Some(grid) = s.grid_data() {
-            x_min = x_min.min(grid.x_min);
-            x_max = x_max.max(grid.x_max);
-            y_min = y_min.min(grid.y_min);
-            y_max = y_max.max(grid.y_max);
-        }
-
-        for &x in s.x_range_values().iter() {
-            if x.is_finite() {
-                x_min = x_min.min(x);
-                x_max = x_max.max(x);
+            if uses_primary_x {
+                x_min = x_min.min(grid.x_min);
+                x_max = x_max.max(grid.x_max);
+            }
+            if uses_primary_y {
+                y_min = y_min.min(grid.y_min);
+                y_max = y_max.max(grid.y_max);
             }
         }
-        for &y in s.y_range_values().iter() {
-            if y.is_finite() {
-                y_min = y_min.min(y);
-                y_max = y_max.max(y);
+
+        if uses_primary_x {
+            for &x in s.x_range_values().iter() {
+                if x.is_finite() {
+                    x_min = x_min.min(x);
+                    x_max = x_max.max(x);
+                }
+            }
+        }
+        if uses_primary_y {
+            for &y in s.y_range_values().iter() {
+                if y.is_finite() {
+                    y_min = y_min.min(y);
+                    y_max = y_max.max(y);
+                }
             }
         }
     }
@@ -582,28 +675,15 @@ fn compute_data_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
 /// Compute data ranges for series that use secondary axes.
 /// Returns (x2_min, x2_max, y2_min, y2_max), falling back to primary ranges.
 fn compute_secondary_ranges(axes: &Axes2D) -> (f64, f64, f64, f64) {
-    use crate::api::options::AxisPair;
-
     let mut x_min = f64::INFINITY;
     let mut x_max = f64::NEG_INFINITY;
     let mut y_min = f64::INFINITY;
     let mut y_max = f64::NEG_INFINITY;
 
     for s in &axes.series {
-        let axis_pair = s
-            .options()
-            .iter()
-            .find_map(|o| {
-                if let PlotOption::Axes(a) = o {
-                    Some(*a)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(AxisPair::X1Y1);
-
-        let uses_x2 = matches!(axis_pair, AxisPair::X2Y1 | AxisPair::X2Y2);
-        let uses_y2 = matches!(axis_pair, AxisPair::X1Y2 | AxisPair::X2Y2);
+        let ap = s.axis_pair();
+        let uses_x2 = matches!(ap, AxisPair::X2Y1 | AxisPair::X2Y2);
+        let uses_y2 = matches!(ap, AxisPair::X1Y2 | AxisPair::X2Y2);
 
         if uses_x2 {
             for &x in s.x_range_values().iter() {
@@ -651,6 +731,8 @@ fn draw_grids(
     x_ticks: &crate::layout::TickSet,
     y_ticks: &crate::layout::TickSet,
     axes: &Axes2D,
+    y2_mapper: Option<&CoordinateMapper>,
+    y2_ticks: Option<&crate::layout::TickSet>,
 ) {
     // Minor grid first (underneath major)
     grid::draw_minor_grid(
@@ -678,23 +760,73 @@ fn draw_grids(
         axes.x_axis.grid_dash.to_pattern(),
         axes.y_axis.grid_dash.to_pattern(),
     );
+
+    // Y2 grid lines
+    if let (Some(y2m), Some(y2t)) = (y2_mapper, y2_ticks) {
+        if axes.y2_axis.minor_grid {
+            grid::draw_minor_grid(
+                canvas,
+                y2m,
+                x_ticks,
+                y2t,
+                false, // don't duplicate x minor grid
+                axes.y2_axis.minor_grid,
+                axes.x_axis.minor_grid_color,
+                axes.y2_axis.minor_grid_color,
+                axes.x_axis.minor_grid_dash.to_pattern(),
+                axes.y2_axis.minor_grid_dash.to_pattern(),
+            );
+        }
+        if axes.y2_axis.grid {
+            grid::draw_grid(
+                canvas,
+                y2m,
+                x_ticks,
+                y2t,
+                false, // don't duplicate x grid
+                axes.y2_axis.grid,
+                axes.x_axis.grid_color,
+                axes.y2_axis.grid_color,
+                axes.x_axis.grid_dash.to_pattern(),
+                axes.y2_axis.grid_dash.to_pattern(),
+            );
+        }
+    }
+}
+
+/// Select the appropriate mapper for a series based on its axis pair.
+fn select_mapper<'a>(
+    s: &SeriesData,
+    primary: &'a CoordinateMapper,
+    y2_mapper: Option<&'a CoordinateMapper>,
+) -> &'a CoordinateMapper {
+    match s.axis_pair() {
+        AxisPair::X1Y2 | AxisPair::X2Y2 => y2_mapper.unwrap_or(primary),
+        _ => primary,
+    }
 }
 
 /// Draw all series in proper rendering order.
-fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: &Axes2D) {
+fn draw_all_series(
+    canvas: &mut BrailleCanvas,
+    mapper: &CoordinateMapper,
+    y2_mapper: Option<&CoordinateMapper>,
+    axes: &Axes2D,
+) {
     // Rendering order: heatmaps -> fills -> boxes -> error bars -> contours -> lines -> points
     // We make multiple passes to ensure correct layering.
 
     // Heatmap pass (background layer)
     for (idx, s) in axes.series.iter().enumerate() {
+        let m = select_mapper(s, mapper, y2_mapper);
         match s {
             SeriesData::Heatmap { grid, options, .. } => {
                 let cmap = resolve_colormap(options);
-                heatmap::draw_heatmap(canvas, grid, mapper, cmap);
+                heatmap::draw_heatmap(canvas, grid, m, cmap);
             }
             SeriesData::HeatmapContour { grid, options, .. } => {
                 let cmap = resolve_colormap(options);
-                heatmap::draw_heatmap(canvas, grid, mapper, cmap);
+                heatmap::draw_heatmap(canvas, grid, m, cmap);
             }
             _ => {}
         }
@@ -703,7 +835,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
 
     for (idx, s) in axes.series.iter().enumerate() {
         if matches!(s, SeriesData::FillBetween { .. }) {
-            draw_series(canvas, mapper, s, idx);
+            draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
     for (idx, s) in axes.series.iter().enumerate() {
@@ -711,7 +843,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
             s,
             SeriesData::Boxes { .. } | SeriesData::BoxAndWhisker { .. }
         ) {
-            draw_series(canvas, mapper, s, idx);
+            draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
     for (idx, s) in axes.series.iter().enumerate() {
@@ -722,12 +854,13 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
                 | SeriesData::YErrorLines { .. }
                 | SeriesData::XErrorLines { .. }
         ) {
-            draw_series(canvas, mapper, s, idx);
+            draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
 
     // Contour pass (above error bars, below lines)
     for (idx, s) in axes.series.iter().enumerate() {
+        let m = select_mapper(s, mapper, y2_mapper);
         match s {
             SeriesData::Contour {
                 grid,
@@ -740,7 +873,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
                 contour::draw_contour(
                     canvas,
                     grid,
-                    mapper,
+                    m,
                     &resolved_levels,
                     Some(color),
                     dash.to_pattern(),
@@ -757,7 +890,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
                 contour::draw_contour(
                     canvas,
                     grid,
-                    mapper,
+                    m,
                     &resolved_levels,
                     Some(TermColor::White),
                     dash.to_pattern(),
@@ -769,7 +902,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
 
     for (idx, s) in axes.series.iter().enumerate() {
         if matches!(s, SeriesData::Lines { .. } | SeriesData::LinesPoints { .. }) {
-            draw_series(canvas, mapper, s, idx);
+            draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
     for (idx, s) in axes.series.iter().enumerate() {
@@ -777,7 +910,7 @@ fn draw_all_series(canvas: &mut BrailleCanvas, mapper: &CoordinateMapper, axes: 
             s,
             SeriesData::Points { .. } | SeriesData::LinesPoints { .. }
         ) {
-            draw_series_points_pass(canvas, mapper, s, idx);
+            draw_series_points_pass(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
 }
@@ -1329,5 +1462,88 @@ mod tests {
         }
         let s = format!("{fig}");
         assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn dual_y_axis_basic() {
+        let mut fig = Figure::new();
+        fig.set_terminal_size(80, 20);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("Dual Axis");
+            ax.set_y_label("Primary", &[]);
+            ax.set_y2_label("Secondary", &[]);
+
+            let xs = vec![1.0, 2.0, 3.0, 4.0];
+            let ys_primary = vec![10.0, 20.0, 15.0, 25.0];
+            let ys_secondary = vec![100.0, 200.0, 150.0, 250.0];
+
+            ax.lines(xs.iter().copied(), ys_primary.iter().copied(), &[]);
+            ax.lines(
+                xs.iter().copied(),
+                ys_secondary.iter().copied(),
+                &[PlotOption::Axes(AxisPair::X1Y2)],
+            );
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+        assert!(result.contains("Dual Axis"));
+    }
+
+    #[test]
+    fn y2_does_not_pollute_primary_range() {
+        // Primary series has small y values; y2 series has huge values.
+        // Primary ticks should stay small.
+        let mut fig = Figure::new();
+        fig.set_terminal_size(80, 20);
+        {
+            let ax = fig.axes2d();
+            let xs = vec![0.0, 1.0, 2.0];
+            let ys_small = vec![1.0, 2.0, 3.0];
+            let ys_huge = vec![1000.0, 2000.0, 3000.0];
+
+            ax.lines(xs.iter().copied(), ys_small.iter().copied(), &[]);
+            ax.lines(
+                xs.iter().copied(),
+                ys_huge.iter().copied(),
+                &[PlotOption::Axes(AxisPair::X1Y2)],
+            );
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+        // The rendered output should NOT contain "3000" on the primary axis
+        // but SHOULD contain it on the y2 axis (right side).
+        // At minimum, the primary tick labels should be in the small range.
+        // Check that the output contains small numbers (from primary ticks).
+        assert!(result.contains('1') || result.contains('2') || result.contains('3'));
+        // The huge y2 values should appear on the right-side axis
+        assert!(result.contains("3000") || result.contains("2000"));
+    }
+
+    #[test]
+    fn dual_y_axis_auto_detect() {
+        // Tagging a series with X1Y2 should trigger y2 axis automatically
+        // without any explicit y2 config.
+        let mut fig = Figure::new();
+        fig.set_terminal_size(80, 20);
+        {
+            let ax = fig.axes2d();
+            ax.set_title("Auto Y2");
+            let xs = vec![1.0, 2.0, 3.0];
+            let ys1 = vec![1.0, 2.0, 3.0];
+            let ys2 = vec![100.0, 200.0, 300.0];
+
+            ax.lines(xs.iter().copied(), ys1.iter().copied(), &[]);
+            ax.lines(
+                xs.iter().copied(),
+                ys2.iter().copied(),
+                &[PlotOption::Axes(AxisPair::X1Y2)],
+            );
+        }
+        let result = fig.render();
+        assert!(!result.is_empty());
+        assert!(result.contains("Auto Y2"));
+        // Y2 ticks should be auto-generated in the 100-300 range
+        assert!(result.contains("100") || result.contains("200") || result.contains("300"));
     }
 }

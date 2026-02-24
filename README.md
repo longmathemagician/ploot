@@ -36,6 +36,12 @@ Isolines extracted via marching squares, drawn as Braille curves.
 
 ![Heatmap with contour lines overlaid](screenshots/heatmap_contour.png)
 
+### Dual Y-axis
+
+Independent primary and secondary y-axes with automatic range detection.
+
+![Dual Y-axis: temperature vs rainfall](screenshots/dual_axis.png)
+
 ### 3D wireframe surface
 
 ![3D wireframe of sin(sqrt(x^2+y^2))](screenshots/surface_wireframe.png)
@@ -177,6 +183,49 @@ fig.show();
 
 Other surface styles: `SurfaceStyle::Wireframe`, `SurfaceStyle::HiddenLine`.
 
+### Dual Y-axis
+
+Plot series against independent primary and secondary y-axes using `PlotOption::Axes(AxisPair::X1Y2)`:
+
+```rust
+use ploot::{AutoOption, AxisPair, DashType, Figure, PlotOption};
+use ploot::canvas::color::TermColor;
+
+let months: Vec<f64> = (1..=12).map(|i| i as f64).collect();
+let temperature = vec![-2.0, 0.5, 5.0, 11.0, 16.0, 20.0, 22.0, 21.0, 17.0, 11.0, 5.0, 0.0];
+let rainfall = vec![45.0, 40.0, 55.0, 60.0, 70.0, 80.0, 75.0, 65.0, 70.0, 75.0, 60.0, 50.0];
+
+let mut fig = Figure::new();
+fig.set_terminal_size(80, 24);
+{
+    let ax = fig.axes2d();
+    ax.set_title("Monthly Temperature & Rainfall");
+    ax.set_x_label("Month", &[]);
+    ax.set_y_label("Temperature (C)", &[]);
+    ax.set_y2_label("Rainfall (mm)", &[]);
+
+    // Temperature on primary y-axis
+    ax.lines(
+        months.iter().copied(),
+        temperature.iter().copied(),
+        &[PlotOption::Caption("Temperature".into()), PlotOption::Color(TermColor::Red)],
+    );
+
+    // Rainfall on secondary y-axis
+    ax.lines(
+        months.iter().copied(),
+        rainfall.iter().copied(),
+        &[
+            PlotOption::Caption("Rainfall".into()),
+            PlotOption::Color(TermColor::Blue),
+            PlotOption::Axes(AxisPair::X1Y2),
+            PlotOption::LineStyle(DashType::Dash),
+        ],
+    );
+}
+fig.show();
+```
+
 ## Features
 
 ### 2D plots
@@ -251,6 +300,7 @@ Run any example from the `examples/` directory:
 ```bash
 cargo run --example line_plot
 cargo run --example bar_chart
+cargo run --example dual_axis
 cargo run --example heatmap
 cargo run --example contour
 cargo run --example heatmap_contour

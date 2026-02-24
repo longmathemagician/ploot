@@ -66,6 +66,9 @@ impl BrailleCanvas {
     }
 
     /// Draws a line using Bresenham's algorithm with optional dash pattern.
+    ///
+    /// `dash_offset` tracks accumulated Euclidean distance for arc-length-preserving
+    /// dash patterns. Pass `&mut 0.0` for independent segments.
     pub fn draw_line(
         &mut self,
         x0: i32,
@@ -74,6 +77,7 @@ impl BrailleCanvas {
         y1: i32,
         color: TermColor,
         dash: &DashPattern,
+        dash_offset: &mut f64,
     ) {
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
@@ -82,10 +86,19 @@ impl BrailleCanvas {
         let mut err = dx + dy;
         let mut x = x0;
         let mut y = y0;
-        let mut step = 0usize;
+
+        // Euclidean distance per Bresenham step: sqrt(dx²+dy²) / max(|dx|,|dy|)
+        let steps = dx.max(-dy); // max(|dx|, |dy|); note dy is negated above
+        let dist_per_step = if steps == 0 {
+            1.0
+        } else {
+            let fdx = (x1 - x0) as f64;
+            let fdy = (y1 - y0) as f64;
+            (fdx * fdx + fdy * fdy).sqrt() / steps as f64
+        };
 
         loop {
-            if dash.is_on(step) && x >= 0 && y >= 0 {
+            if dash.is_on_at_distance(*dash_offset) && x >= 0 && y >= 0 {
                 self.set_pixel(x as usize, y as usize, color);
             }
             if x == x1 && y == y1 {
@@ -100,13 +113,13 @@ impl BrailleCanvas {
                 err += dx;
                 y += sy;
             }
-            step += 1;
+            *dash_offset += dist_per_step;
         }
     }
 
     /// Draws a solid line (convenience wrapper).
     pub fn draw_line_solid(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: TermColor) {
-        self.draw_line(x0, y0, x1, y1, color, &SOLID);
+        self.draw_line(x0, y0, x1, y1, color, &SOLID, &mut 0.0);
     }
 
     /// Clears all cells to blank.
@@ -285,12 +298,81 @@ mod tests {
     fn dash_pattern_line() {
         use super::super::DASH;
         let mut c = BrailleCanvas::new(10, 1);
-        c.draw_line(0, 0, 19, 0, TermColor::Default, &DASH);
+        c.draw_line(0, 0, 19, 0, TermColor::Default, &DASH, &mut 0.0);
         let s = c.render_plain();
         // Some cells should have dots, some should be blank (due to dash gaps)
         let has_dot = s.chars().any(|ch| ch != '\n' && ch != '\u{2800}');
         let has_blank = s.chars().any(|ch| ch == '\u{2800}');
         assert!(has_dot);
         assert!(has_blank);
+    }
+
+    #[test]
+    fn arc_length_offset_tracks_euclidean_distance() {
+        use super::super::DASH;
+
+        // After drawing a line, dash_offset should equal the Euclidean length of that line.
+        // This is the core invariant: the pattern advances by true distance, not step count.
+
+        // Horizontal line: 100 pixels, Euclidean length = 100
+        let mut offset_h = 0.0;
+        let mut c = BrailleCanvas::new(60, 20);
+        c.draw_line(0, 10, 99, 10, TermColor::Default, &DASH, &mut offset_h);
+        assert!(
+            (offset_h - 99.0).abs() < 1.0,
+            "horizontal offset {offset_h:.2} should be ~99.0"
+        );
+
+        // 45° diagonal: dx=dy=70, Euclidean length = 70√2 ≈ 98.99
+        let mut offset_d = 0.0;
+        let mut c2 = BrailleCanvas::new(60, 60);
+        c2.draw_line(0, 0, 70, 70, TermColor::Default, &DASH, &mut offset_d);
+        let expected = (70.0_f64 * 70.0 + 70.0 * 70.0).sqrt();
+        assert!(
+            (offset_d - expected).abs() < 1.5,
+            "diagonal offset {offset_d:.2} should be ~{expected:.2}"
+        );
+
+        // Steep line: dx=20, dy=80, Euclidean length = √(400+6400) ≈ 82.46
+        let mut offset_s = 0.0;
+        let mut c3 = BrailleCanvas::new(20, 30);
+        c3.draw_line(0, 0, 20, 80, TermColor::Default, &DASH, &mut offset_s);
+        let expected_s = (20.0_f64 * 20.0 + 80.0 * 80.0).sqrt();
+        assert!(
+            (offset_s - expected_s).abs() < 1.5,
+            "steep offset {offset_s:.2} should be ~{expected_s:.2}"
+        );
+    }
+
+    #[test]
+    fn arc_length_dash_on_fraction_consistent() {
+        use super::super::DASH;
+
+        // The fraction of on-pixels vs total Bresenham steps should be approximately
+        // the same (~60% for DASH: 6 on / 10 total) regardless of slope.
+        fn on_fraction(x0: i32, y0: i32, x1: i32, y1: i32) -> f64 {
+            let mut c = BrailleCanvas::new(80, 40);
+            c.draw_line(x0, y0, x1, y1, TermColor::Default, &DASH, &mut 0.0);
+            let s = c.render_plain();
+            let on: usize = s
+                .chars()
+                .filter(|&ch| ch != '\n')
+                .map(|ch| ((ch as u32).wrapping_sub(0x2800) as u8).count_ones() as usize)
+                .sum();
+            let total_steps = (x1 - x0).abs().max((y1 - y0).abs()) + 1;
+            on as f64 / total_steps as f64
+        }
+
+        let horiz = on_fraction(0, 20, 99, 20);
+        let diag = on_fraction(0, 20, 70, 90);
+        let steep = on_fraction(5, 0, 25, 99);
+
+        // All should be near 0.60 (6/10), within tolerance for rasterization edge effects
+        for (label, frac) in [("horizontal", horiz), ("diagonal", diag), ("steep", steep)] {
+            assert!(
+                (0.50..=0.70).contains(&frac),
+                "{label} on-fraction {frac:.3} should be near 0.60"
+            );
+        }
     }
 }

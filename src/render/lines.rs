@@ -13,6 +13,7 @@ pub fn draw_lines(
     let pw = canvas.pixel_width() as f64;
     let ph = canvas.pixel_height() as f64;
     let len = px.len().min(py.len());
+    let mut dash_offset = 0.0;
 
     for i in 1..len {
         let x0 = px[i - 1];
@@ -21,6 +22,7 @@ pub fn draw_lines(
         let y1 = py[i];
 
         if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+            dash_offset = 0.0;
             continue;
         }
 
@@ -33,6 +35,7 @@ pub fn draw_lines(
                 cy1.round() as i32,
                 color,
                 dash,
+                &mut dash_offset,
             );
         }
     }

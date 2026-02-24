@@ -29,6 +29,7 @@ pub fn draw_contour(
                 py1.round() as i32,
                 line_color,
                 dash,
+                &mut 0.0,
             );
         }
     }

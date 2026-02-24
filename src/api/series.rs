@@ -1,5 +1,5 @@
 use super::grid::GridData;
-use super::options::PlotOption;
+use super::options::{AxisPair, PlotOption};
 
 /// Data and configuration for a single plot series.
 #[derive(Debug, Clone)]
@@ -165,6 +165,20 @@ impl SeriesData {
             | SeriesData::Contour { options, .. }
             | SeriesData::HeatmapContour { options, .. } => options,
         }
+    }
+
+    /// Returns the axis pair this series is plotted against.
+    pub fn axis_pair(&self) -> AxisPair {
+        self.options()
+            .iter()
+            .find_map(|o| {
+                if let PlotOption::Axes(a) = o {
+                    Some(*a)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(AxisPair::X1Y1)
     }
 
     /// Returns the x data for this series (empty for grid-based types).

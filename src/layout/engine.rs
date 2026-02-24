@@ -124,7 +124,10 @@ pub fn compute_layout(config: &LayoutConfig, x_ticks: &TickSet, y_ticks: &TickSe
         canvas_char_height -= (canvas_char_height - 1) % (n_y - 1);
     }
     let n_x = x_ticks.ticks.len();
-    if n_x > 1 {
+    let x_ticks_match_range =
+        x_ticks.ticks.first().map_or(true, |t| (x_ticks.min - t.0).abs() < 1e-10)
+            && x_ticks.ticks.last().map_or(true, |t| (x_ticks.max - t.0).abs() < 1e-10);
+    if n_x > 1 && x_ticks_match_range {
         canvas_char_width -= (canvas_char_width - 1) % (n_x - 1);
     }
 
@@ -289,15 +292,19 @@ pub fn render_frame(
         }
     }
 
-    // X-axis ticks — index-based cell placement matching aligned mapper
+    // X-axis ticks — use proportional placement when tick range has been padded,
+    // otherwise use index-based cell placement matching aligned mapper.
     let n_x = x_ticks.ticks.len();
-    let cells_per_x = if n_x > 1 {
-        ((layout.canvas_char_width - 1) / (n_x - 1)).max(1)
-    } else {
-        1
-    };
-    for (j, (_, label)) in x_ticks.ticks.iter().enumerate() {
-        let cell_col = if n_x > 1 {
+    let x_proportional =
+        !x_ticks.ticks.first().map_or(true, |t| (x_ticks.min - t.0).abs() < 1e-10)
+            || !x_ticks.ticks.last().map_or(true, |t| (x_ticks.max - t.0).abs() < 1e-10);
+
+    for (j, (val, label)) in x_ticks.ticks.iter().enumerate() {
+        let cell_col = if x_proportional && n_x > 1 {
+            let frac = (val - x_ticks.min) / (x_ticks.max - x_ticks.min);
+            (frac * (layout.canvas_char_width - 1) as f64).round() as usize
+        } else if n_x > 1 {
+            let cells_per_x = ((layout.canvas_char_width - 1) / (n_x - 1)).max(1);
             j * cells_per_x
         } else {
             layout.canvas_char_width / 2

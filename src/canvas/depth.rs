@@ -1,7 +1,22 @@
 use super::PIXEL_MAP;
 use super::braille::BrailleCanvas;
 use super::color::TermColor;
-use super::colormap::{ColorDensity, DENSITY_FILL_ORDER};
+use super::colormap::ColorDensity;
+
+/// Sub-pixel fill order within a 2x4 Braille cell for perceptually uniform density.
+///
+/// Positions are (column, row) within the cell, ordered to spread dots
+/// evenly across the cell as density increases from 1 to 8.
+const DENSITY_FILL_ORDER: [(usize, usize); 8] = [
+    (0, 0), // top-left
+    (1, 3), // bottom-right
+    (1, 1), // middle-right
+    (0, 2), // middle-left
+    (0, 1), // upper-left
+    (1, 0), // top-right
+    (1, 2), // lower-right
+    (0, 3), // bottom-left
+];
 
 /// Z-buffer wrapper around BrailleCanvas for depth-correct rendering.
 ///
@@ -101,7 +116,7 @@ impl DepthCanvas {
     pub fn fill_cell_density(&mut self, char_x: usize, char_y: usize, cd: ColorDensity, z: f64) {
         let base_px = char_x * 2;
         let base_py = char_y * 4;
-        let n = cd.density.min(8) as usize;
+        let n = (cd.density * 8.0).round().clamp(0.0, 8.0) as usize;
 
         for &(col, row) in DENSITY_FILL_ORDER.iter().take(n) {
             let px = base_px + col;
@@ -114,7 +129,7 @@ impl DepthCanvas {
     pub fn fill_cell_density_no_depth(&mut self, char_x: usize, char_y: usize, cd: ColorDensity) {
         let base_px = char_x * 2;
         let base_py = char_y * 4;
-        let n = cd.density.min(8) as usize;
+        let n = (cd.density * 8.0).round().clamp(0.0, 8.0) as usize;
         let _ = PIXEL_MAP; // reference for clarity
 
         for &(col, row) in DENSITY_FILL_ORDER.iter().take(n) {
@@ -167,7 +182,7 @@ mod tests {
         let mut dc = DepthCanvas::new(1, 1);
         let cd = ColorDensity {
             color: TermColor::Green,
-            density: 4,
+            density: 0.5,
         };
         dc.fill_cell_density(0, 0, cd, 1.0);
         let byte = dc.canvas().cell_byte(0);
@@ -182,5 +197,22 @@ mod tests {
         let s = dc.canvas().render_plain();
         let non_blank = s.chars().filter(|&c| c != '\u{2800}' && c != '\n').count();
         assert!(non_blank > 0);
+    }
+
+    #[test]
+    fn density_fill_order_covers_all() {
+        let mut cols = [false; 2];
+        let mut rows = [false; 4];
+        let mut positions = std::collections::HashSet::new();
+        for &(c, r) in &DENSITY_FILL_ORDER {
+            assert!(c < 2);
+            assert!(r < 4);
+            cols[c] = true;
+            rows[r] = true;
+            positions.insert((c, r));
+        }
+        assert_eq!(positions.len(), 8);
+        assert!(cols.iter().all(|&v| v));
+        assert!(rows.iter().all(|&v| v));
     }
 }

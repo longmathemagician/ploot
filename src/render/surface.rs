@@ -50,7 +50,7 @@ pub fn draw_surface_wireframe(
             let py0 = (-sy0 * scale_y + offset_y).round() as i32;
             let px1 = (sx1 * scale_x + offset_x).round() as i32;
             let py1 = (-sy1 * scale_y + offset_y).round() as i32;
-            canvas.draw_line(px0, py0, px1, py1, color, &SOLID);
+            canvas.draw_line(px0, py0, px1, py1, color, &SOLID, &mut 0.0);
         }
     }
 
@@ -65,7 +65,7 @@ pub fn draw_surface_wireframe(
             let py0 = (-sy0 * scale_y + offset_y).round() as i32;
             let px1 = (sx1 * scale_x + offset_x).round() as i32;
             let py1 = (-sy1 * scale_y + offset_y).round() as i32;
-            canvas.draw_line(px0, py0, px1, py1, color, &SOLID);
+            canvas.draw_line(px0, py0, px1, py1, color, &SOLID, &mut 0.0);
         }
     }
 }
