@@ -25,6 +25,9 @@ pub struct SurfaceData {
 }
 
 /// 3D axes that own surface data and view configuration.
+pub type Layout3D = Axes3D;
+
+/// 3D axes that own surface data and view configuration.
 pub struct Axes3D {
     pub(crate) surfaces: Vec<SurfaceData>,
     pub(crate) title: Option<String>,
@@ -38,7 +41,8 @@ pub struct Axes3D {
 }
 
 impl Axes3D {
-    pub(crate) fn new() -> Self {
+    /// Create a new empty 3D axes with default view angles.
+    pub fn new() -> Self {
         Self {
             surfaces: Vec::new(),
             title: None,
@@ -52,7 +56,49 @@ impl Axes3D {
         }
     }
 
-    /// Set the viewing angle.
+    /// Add a surface dataset (consuming builder).
+    pub fn with_surface(mut self, grid: GridData, style: SurfaceStyle, options: &[PlotOption]) -> Self {
+        self.surface(grid, style, options);
+        self
+    }
+
+    /// Set the viewing angle (consuming builder).
+    pub fn with_view(mut self, azimuth: f64, elevation: f64) -> Self {
+        self.set_view(azimuth, elevation);
+        self
+    }
+
+    /// Set the colormap (consuming builder).
+    pub fn with_colormap(mut self, cmap: ColorMapType) -> Self {
+        self.set_colormap(cmap);
+        self
+    }
+
+    /// Set the plot title (consuming builder).
+    pub fn with_title(mut self, title: &str) -> Self {
+        self.set_title(title);
+        self
+    }
+
+    /// Set the x-axis label (consuming builder).
+    pub fn with_x_label(mut self, label: &str) -> Self {
+        self.set_x_label(label);
+        self
+    }
+
+    /// Set the y-axis label (consuming builder).
+    pub fn with_y_label(mut self, label: &str) -> Self {
+        self.set_y_label(label);
+        self
+    }
+
+    /// Set the z-axis label (consuming builder).
+    pub fn with_z_label(mut self, label: &str) -> Self {
+        self.set_z_label(label);
+        self
+    }
+
+    /// Set the viewing angle (azimuth and elevation in degrees).
     pub fn set_view(&mut self, azimuth: f64, elevation: f64) -> &mut Self {
         self.azimuth = azimuth;
         self.elevation = elevation;

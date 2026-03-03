@@ -145,6 +145,58 @@ pub enum SeriesData {
         /// Per-series display options.
         options: Vec<PlotOption>,
     },
+    /// 1D Histogram
+    Histogram {
+        /// Raw data points to bin.
+        data: Vec<f64>,
+        /// Number of bins.
+        bins: usize,
+        /// Whether to normalize to a probability density.
+        normalize: bool,
+        /// Optional explicit range.
+        range: Option<(f64, f64)>,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
+    /// 2D Histogram
+    Histogram2D {
+        /// Raw X data points.
+        x: Vec<f64>,
+        /// Raw Y data points.
+        y: Vec<f64>,
+        /// Number of bins in X.
+        x_bins: usize,
+        /// Number of bins in Y.
+        y_bins: usize,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
+    /// Candlestick chart for financial data.
+    Candlestick {
+        /// X coordinates.
+        x: Vec<f64>,
+        /// Open values.
+        open: Vec<f64>,
+        /// High values.
+        high: Vec<f64>,
+        /// Low values.
+        low: Vec<f64>,
+        /// Close values.
+        close: Vec<f64>,
+        /// Optional width for the candles.
+        width: Option<f64>,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
+    /// Pie Chart
+    Pie {
+        /// Values for each slice.
+        values: Vec<f64>,
+        /// Optional labels for each slice.
+        labels: Option<Vec<String>>,
+        /// Per-series display options.
+        options: Vec<PlotOption>,
+    },
 }
 
 impl SeriesData {
@@ -163,7 +215,11 @@ impl SeriesData {
             | SeriesData::BoxAndWhisker { options, .. }
             | SeriesData::Heatmap { options, .. }
             | SeriesData::Contour { options, .. }
-            | SeriesData::HeatmapContour { options, .. } => options,
+            | SeriesData::HeatmapContour { options, .. }
+            | SeriesData::Histogram { options, .. }
+            | SeriesData::Histogram2D { options, .. }
+            | SeriesData::Candlestick { options, .. }
+            | SeriesData::Pie { options, .. } => options,
         }
     }
 
@@ -193,10 +249,14 @@ impl SeriesData {
             | SeriesData::XErrorBars { x, .. }
             | SeriesData::YErrorLines { x, .. }
             | SeriesData::XErrorLines { x, .. }
-            | SeriesData::BoxAndWhisker { x, .. } => x,
+            | SeriesData::BoxAndWhisker { x, .. }
+            | SeriesData::Histogram2D { x, .. }
+            | SeriesData::Candlestick { x, .. } => x,
+            SeriesData::Histogram { data, .. } => data,
             SeriesData::Heatmap { .. }
             | SeriesData::Contour { .. }
-            | SeriesData::HeatmapContour { .. } => &[],
+            | SeriesData::HeatmapContour { .. }
+            | SeriesData::Pie { .. } => &[],
         }
     }
 
@@ -213,9 +273,13 @@ impl SeriesData {
             | SeriesData::XErrorLines { y, .. } => y,
             SeriesData::FillBetween { y1, .. } => y1,
             SeriesData::BoxAndWhisker { median, .. } => median,
+            SeriesData::Histogram2D { y, .. } => y,
             SeriesData::Heatmap { .. }
             | SeriesData::Contour { .. }
-            | SeriesData::HeatmapContour { .. } => &[],
+            | SeriesData::HeatmapContour { .. }
+            | SeriesData::Histogram { .. }
+            | SeriesData::Candlestick { .. }
+            | SeriesData::Pie { .. } => &[],
         }
     }
 
@@ -243,9 +307,17 @@ impl SeriesData {
                 v.extend_from_slice(max);
                 v
             }
-            SeriesData::Heatmap { .. }
+            SeriesData::Candlestick { low, high, .. } => {
+                let mut v = low.clone();
+                v.extend_from_slice(high);
+                v
+            }
+            SeriesData::Histogram { .. }
+            | SeriesData::Histogram2D { .. }
+            | SeriesData::Heatmap { .. }
             | SeriesData::Contour { .. }
-            | SeriesData::HeatmapContour { .. } => Vec::new(),
+            | SeriesData::HeatmapContour { .. }
+            | SeriesData::Pie { .. } => Vec::new(),
         }
     }
 
@@ -260,7 +332,8 @@ impl SeriesData {
             }
             SeriesData::Heatmap { .. }
             | SeriesData::Contour { .. }
-            | SeriesData::HeatmapContour { .. } => Vec::new(),
+            | SeriesData::HeatmapContour { .. }
+            | SeriesData::Pie { .. } => Vec::new(),
             _ => self.x_data().to_vec(),
         }
     }

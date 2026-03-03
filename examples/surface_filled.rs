@@ -1,4 +1,4 @@
-use ploot::{ColorMapType, Figure, GridData, SurfaceStyle};
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,14 +8,15 @@ fn main() {
         20,
         20,
     );
-    let mut fig = Figure::new();
-    fig.set_terminal_size(80, 24);
-    {
-        let ax = fig.axes3d();
-        ax.set_title("3D Filled: sin(sqrt(x^2+y^2))");
-        ax.set_view(30.0, 30.0);
-        ax.set_colormap(ColorMapType::Rainbow);
-        ax.surface(grid, SurfaceStyle::Filled, &[]);
-    }
-    fig.show();
+
+    let layout = Layout3D::new()
+        .with_title("3D Filled: sin(sqrt(x^2+y^2))")
+        .with_view(30.0, 30.0)
+        .with_colormap(ColorMapType::Rainbow)
+        .with_surface(grid, SurfaceStyle::Filled, &[]);
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout3d(layout)
+        .show();
 }

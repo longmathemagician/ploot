@@ -1,4 +1,4 @@
-use ploot::GridData;
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,6 +8,13 @@ fn main() {
         40,
         40,
     );
-    let output = ploot::quick_contour(grid, 8, Some("Contour: Gaussian"), 80, 24);
-    println!("{output}");
+
+    let layout = Layout2D::new()
+        .with_title("Contour: Gaussian")
+        .with_plot(ContourPlot::new(grid).with_levels(8));
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout(layout)
+        .show();
 }

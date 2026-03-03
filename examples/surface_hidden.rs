@@ -1,4 +1,4 @@
-use ploot::{Figure, GridData, SurfaceStyle};
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,13 +8,14 @@ fn main() {
         20,
         20,
     );
-    let mut fig = Figure::new();
-    fig.set_terminal_size(80, 24);
-    {
-        let ax = fig.axes3d();
-        ax.set_title("3D Hidden-Line: sin(x) + cos(y)");
-        ax.set_view(45.0, 30.0);
-        ax.surface(grid, SurfaceStyle::HiddenLine, &[]);
-    }
-    fig.show();
+
+    let layout = Layout3D::new()
+        .with_title("3D Hidden-Line: sin(x) + cos(y)")
+        .with_view(45.0, 30.0)
+        .with_surface(grid, SurfaceStyle::HiddenLine, &[]);
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout3d(layout)
+        .show();
 }

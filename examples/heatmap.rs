@@ -1,4 +1,4 @@
-use ploot::GridData;
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,13 +8,15 @@ fn main() {
         40,
         40,
     );
-    let output = ploot::quick_heatmap(
-        grid,
-        Some("Heatmap: sin(x)*cos(y)"),
-        Some("x"),
-        Some("y"),
-        80,
-        24,
-    );
-    println!("{output}");
+
+    let layout = Layout2D::new()
+        .with_title("Heatmap: sin(x)*cos(y)")
+        .with_x_label("x")
+        .with_y_label("y")
+        .with_plot(HeatmapPlot::new(grid));
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout(layout)
+        .show();
 }

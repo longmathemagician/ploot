@@ -828,6 +828,50 @@ fn draw_all_series(
                 let cmap = resolve_colormap(options);
                 heatmap::draw_heatmap(canvas, grid, m, cmap);
             }
+            SeriesData::Histogram2D { x, y, x_bins, y_bins, options } => {
+                let cmap = resolve_colormap(options);
+                if *x_bins > 0 && *y_bins > 0 && !x.is_empty() {
+                    let mut x_min = f64::INFINITY;
+                    let mut x_max = f64::NEG_INFINITY;
+                    let mut y_min = f64::INFINITY;
+                    let mut y_max = f64::NEG_INFINITY;
+                    for &xv in x { if xv.is_finite() { x_min = x_min.min(xv); x_max = x_max.max(xv); } }
+                    for &yv in y { if yv.is_finite() { y_min = y_min.min(yv); y_max = y_max.max(yv); } }
+                    
+                    if x_max > x_min && y_max > y_min {
+                        let mut z = vec![0.0; x_bins * y_bins];
+                        let dx = (x_max - x_min) / *x_bins as f64;
+                        let dy = (y_max - y_min) / *y_bins as f64;
+                        let len = x.len().min(y.len());
+                        for i in 0..len {
+                            let xv = x[i];
+                            let yv = y[i];
+                            if xv >= x_min && xv <= x_max && yv >= y_min && yv <= y_max {
+                                let mut bx = ((xv - x_min) / dx).floor() as usize;
+                                let mut by = ((yv - y_min) / dy).floor() as usize;
+                                if bx >= *x_bins { bx = *x_bins - 1; }
+                                if by >= *y_bins { by = *y_bins - 1; }
+                                z[by * *x_bins + bx] += 1.0;
+                            }
+                        }
+                        let mut z_max: f64 = 0.0;
+                        for &v in &z { z_max = z_max.max(v); }
+                        
+                        let grid = crate::api::grid::GridData {
+                            z_values: z,
+                            nx: *x_bins,
+                            ny: *y_bins,
+                            x_min,
+                            x_max,
+                            y_min,
+                            y_max,
+                            z_min: 0.0,
+                            z_max,
+                        };
+                        heatmap::draw_heatmap(canvas, &grid, m, cmap);
+                    }
+                }
+            }
             _ => {}
         }
         let _ = idx;
@@ -841,7 +885,7 @@ fn draw_all_series(
     for (idx, s) in axes.series.iter().enumerate() {
         if matches!(
             s,
-            SeriesData::Boxes { .. } | SeriesData::BoxAndWhisker { .. }
+            SeriesData::Boxes { .. } | SeriesData::BoxAndWhisker { .. } | SeriesData::Candlestick { .. }
         ) {
             draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
@@ -911,6 +955,12 @@ fn draw_all_series(
             SeriesData::Points { .. } | SeriesData::LinesPoints { .. }
         ) {
             draw_series_points_pass(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
+        }
+    }
+    // Pie pass (topmost layer)
+    for (idx, s) in axes.series.iter().enumerate() {
+        if matches!(s, SeriesData::Pie { .. }) {
+            draw_series(canvas, select_mapper(s, mapper, y2_mapper), s, idx);
         }
     }
 }
@@ -1165,7 +1215,125 @@ fn draw_series(
         // Grid-based types handled in dedicated passes
         SeriesData::Heatmap { .. }
         | SeriesData::Contour { .. }
-        | SeriesData::HeatmapContour { .. } => {}
+        | SeriesData::HeatmapContour { .. }
+        | SeriesData::Histogram2D { .. } => {}
+
+        SeriesData::Histogram { data, bins, normalize, range, options } => {
+            if data.is_empty() || *bins == 0 {
+                return;
+            }
+            let min_val = range.map(|r| r.0).unwrap_or_else(|| data.iter().copied().fold(f64::INFINITY, f64::min));
+            let max_val = range.map(|r| r.1).unwrap_or_else(|| data.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            if min_val >= max_val { return; }
+
+            let bin_width = (max_val - min_val) / *bins as f64;
+            let mut counts = vec![0.0; *bins];
+            for &v in data {
+                if v >= min_val && v <= max_val {
+                    let mut bin_idx = ((v - min_val) / bin_width).floor() as usize;
+                    if bin_idx >= *bins {
+                        bin_idx = *bins - 1;
+                    }
+                    counts[bin_idx] += 1.0;
+                }
+            }
+
+            if *normalize {
+                let total = data.len() as f64;
+                for c in &mut counts {
+                    *c /= total * bin_width;
+                }
+            }
+
+            let bx: Vec<f64> = (0..*bins).map(|i| min_val + (i as f64 + 0.5) * bin_width).collect();
+            let box_frac = resolve_box_width(options);
+            let (px, py) = map_to_pixels(mapper, &bx, &counts);
+
+            let baseline_y = if mapper.data_y_min <= 0.0 && mapper.data_y_max >= 0.0 { 0.0 } else { mapper.data_y_min };
+            let (_, baseline_py) = mapper.data_to_pixel(0.0, baseline_y);
+
+            let (px0, _) = mapper.data_to_pixel(0.0, 0.0);
+            let (px1, _) = mapper.data_to_pixel(bin_width, 0.0);
+            let box_width_px = (px1 - px0).abs() * box_frac;
+
+            boxes::draw_boxes(canvas, &px, &py, baseline_py, color, box_width_px);
+        }
+        SeriesData::Candlestick { x, open, high, low, close, width, options } => {
+            let box_frac = resolve_box_width(options);
+            
+            let mut q1 = Vec::with_capacity(x.len());
+            let mut q3 = Vec::with_capacity(x.len());
+            for i in 0..x.len() {
+                q1.push(open[i].min(close[i]));
+                q3.push(open[i].max(close[i]));
+            }
+            
+            let (px, py_min) = map_to_pixels(mapper, x, low);
+            let (_, py_q1) = map_to_pixels(mapper, x, &q1);
+            let (_, py_q3) = map_to_pixels(mapper, x, &q3);
+            let (_, py_max) = map_to_pixels(mapper, x, high);
+
+            let box_width_px = width.unwrap_or_else(|| {
+                if x.len() >= 2 {
+                    let min_spacing = x.windows(2).map(|w| (w[1] - w[0]).abs()).filter(|s| *s > f64::EPSILON).fold(f64::INFINITY, f64::min);
+                    let (px0, _) = mapper.data_to_pixel(0.0, 0.0);
+                    let (px1, _) = mapper.data_to_pixel(min_spacing, 0.0);
+                    (px1 - px0).abs() * box_frac
+                } else {
+                    (canvas.pixel_width() as f64 * 0.1).max(2.0) * box_frac
+                }
+            });
+
+            box_whisker::draw_box_and_whisker(canvas, &px, &py_min, &py_q1, &py_q1, &py_q3, &py_max, color, box_width_px);
+        }
+        SeriesData::Pie { values, labels: _, options: _ } => {
+            let total: f64 = values.iter().sum();
+            if total <= 0.0 { return; }
+            let mut angles = Vec::new();
+            let mut acc = 0.0;
+            for &v in values {
+                acc += v / total * std::f64::consts::TAU;
+                angles.push(acc);
+            }
+
+            let (cx_p, cy_p) = mapper.data_to_pixel(0.0, 0.0);
+            let (rx_p, _) = mapper.data_to_pixel(0.8, 0.0);
+            let (_, ry_p) = mapper.data_to_pixel(0.0, 0.8);
+            
+            let dx_px = (rx_p - cx_p).abs();
+            let dy_px = (ry_p - cy_p).abs();
+
+            if dx_px < 1.0 || dy_px < 1.0 { return; }
+
+            let x0 = (cx_p - dx_px).floor() as usize;
+            let x1 = (cx_p + dx_px).ceil() as usize;
+            let y0 = (cy_p - dy_px).floor() as usize;
+            let y1 = (cy_p + dy_px).ceil() as usize;
+
+            for py in y0..=y1 {
+                for px in x0..=x1 {
+                    let rx = (px as f64 - cx_p) / dx_px;
+                    let ry = (cy_p - py as f64) / dy_px; // Terminal y is down
+
+                    if rx * rx + ry * ry <= 1.0 {
+                        let mut angle = ry.atan2(rx);
+                        if angle < 0.0 {
+                            angle += std::f64::consts::TAU;
+                        }
+                        
+                        let mut slice_idx = 0;
+                        for (i, &a) in angles.iter().enumerate() {
+                            if angle <= a {
+                                slice_idx = i;
+                                break;
+                            }
+                        }
+                        let pcolor = crate::canvas::PALETTE[slice_idx % crate::canvas::PALETTE.len()];
+                        canvas.set_pixel(px, py, pcolor);
+                    }
+                }
+            }
+        }
     }
 }
 

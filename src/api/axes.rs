@@ -5,7 +5,11 @@ use super::grid::GridData;
 use super::options::{
     AutoOption, Coordinate, DashType, LabelOption, LegendOption, Placement, PlotOption, TickOption,
 };
+use super::plots::Plot2D;
 use super::series::SeriesData;
+
+/// Alias for Axes2D to provide a declarative Kuva-style Layout builder.
+pub type Layout2D = Axes2D;
 
 /// Configuration for a single axis.
 #[derive(Debug, Clone)]
@@ -116,7 +120,9 @@ impl Default for LegendConfig {
 
 /// A 2D axes object that owns series data and axis configuration.
 ///
-/// Follows the gnuplot crate's builder pattern: methods return `&mut Self`.
+/// Also available as the [`Layout2D`] type alias for use with the consuming
+/// builder API (`with_title()`, `with_plot()`, etc.). The gnuplot-compatible
+/// mutable-borrow API (`set_title()`, `lines()`, etc.) is also supported.
 pub struct Axes2D {
     pub(crate) series: Vec<SeriesData>,
     pub(crate) title: Option<String>,
@@ -132,7 +138,8 @@ pub struct Axes2D {
 }
 
 impl Axes2D {
-    pub(crate) fn new() -> Self {
+    /// Create a new empty 2D axes with default configuration.
+    pub fn new() -> Self {
         Self {
             series: Vec::new(),
             title: None,
@@ -163,6 +170,52 @@ impl Axes2D {
             }
         }
         self.next_auto_color()
+    }
+
+
+    /// Create a layout automatically based on given plots.
+    pub fn auto_from_plots<P: Into<Plot2D> + Clone>(plots: &[P]) -> Self {
+        let mut layout = Self::new();
+        for plot in plots {
+            layout.series.push(plot.clone().into());
+        }
+        layout
+    }
+
+    /// Add a plot to the layout directly.
+    pub fn with_plot<P: Into<Plot2D>>(mut self, plot: P) -> Self {
+        self.series.push(plot.into());
+        self
+    }
+
+    /// Consuming builder for title.
+    pub fn with_title(mut self, title: &str) -> Self {
+        self.set_title(title);
+        self
+    }
+
+    /// Consuming builder for x label.
+    pub fn with_x_label(mut self, label: &str) -> Self {
+        self.set_x_label(label, &[]);
+        self
+    }
+
+    /// Consuming builder for y label.
+    pub fn with_y_label(mut self, label: &str) -> Self {
+        self.set_y_label(label, &[]);
+        self
+    }
+
+    /// Consuming builder for y grid.
+    pub fn with_y_grid(mut self, enabled: bool) -> Self {
+        self.set_y_grid(enabled);
+        self
+    }
+
+    /// Consuming builder for x grid.
+    pub fn with_x_grid(mut self, enabled: bool) -> Self {
+        self.set_x_grid(enabled);
+        self
     }
 
     // ── Series addition methods ─────────────────────────────────────────

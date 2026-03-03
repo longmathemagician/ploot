@@ -10,53 +10,89 @@ Each terminal cell encodes a 2x4 sub-pixel grid, giving smooth curves at high ef
 
 ### Line plots with legend, grid, and dash styles
 
-![Lines, points, and dash styles](screenshots/line_plot.png)
+![Lines, points, and dash styles](screenshots/line_plot.svg)
 
 ### Multiple series with automatic color cycling
 
-![Four mathematical functions plotted with auto color cycling](screenshots/multi_series.png)
+![Four mathematical functions plotted with auto color cycling](screenshots/multi_series.svg)
 
 ### Bar chart
 
-![Bar chart with axis labels](screenshots/bar_chart.png)
+![Bar chart with axis labels](screenshots/bar_chart.svg)
 
 ### Heatmap
 
 Color-mapped density rendering of 2D scalar fields using Braille dot density + ANSI color.
 
-![Heatmap of sin(x)*cos(y)](screenshots/heatmap.png)
+![Heatmap of sin(x)*cos(y)](screenshots/heatmap.svg)
 
 ### Contour plot
 
 Isolines extracted via marching squares, drawn as Braille curves.
 
-![Contour plot of a Gaussian](screenshots/contour.png)
+![Contour plot of a Gaussian](screenshots/contour.svg)
 
 ### Heatmap + contour overlay
 
-![Heatmap with contour lines overlaid](screenshots/heatmap_contour.png)
+![Heatmap with contour lines overlaid](screenshots/heatmap_contour.svg)
 
 ### Dual Y-axis
 
 Independent primary and secondary y-axes with automatic range detection.
 
-![Dual Y-axis: temperature vs rainfall](screenshots/dual_axis.png)
+![Dual Y-axis: temperature vs rainfall](screenshots/dual_axis.svg)
 
 ### 3D wireframe surface
 
-![3D wireframe of sin(sqrt(x^2+y^2))](screenshots/surface_wireframe.png)
+![3D wireframe of sin(sqrt(x^2+y^2))](screenshots/surface_wireframe.svg)
 
 ### 3D hidden-line surface
 
 Depth-buffered wireframe with per-pixel occlusion.
 
-![3D hidden-line surface of sin(x)+cos(y)](screenshots/surface_hidden.png)
+![3D hidden-line surface of sin(x)+cos(y)](screenshots/surface_hidden.svg)
 
 ### 3D filled surface
 
 Color-mapped density shading with wireframe overlay.
 
-![3D filled surface with rainbow colormap](screenshots/surface_filled.png)
+![3D filled surface with rainbow colormap](screenshots/surface_filled.svg)
+
+### Scatter plot
+
+Six marker styles: dot, cross, circle, diamond, triangle, square.
+
+![Scatter plot with multiple marker styles](screenshots/scatter.svg)
+
+### Histogram
+
+Automatic binning of raw data into bar counts.
+
+![Histogram of simulated data](screenshots/histogram.svg)
+
+### Box-and-whisker
+
+Statistical summary plots showing median, quartiles, and range.
+
+![Box-and-whisker plot](screenshots/box_whisker.svg)
+
+### Confidence band (fill-between)
+
+Shaded area between two curves for uncertainty visualization.
+
+![Fill-between confidence band](screenshots/fill_between.svg)
+
+### Candlestick chart
+
+OHLC financial data rendered as candlestick bodies with high/low wicks.
+
+![Candlestick chart](screenshots/candlestick.svg)
+
+### Pie chart
+
+Proportional arc segments with labels rendered via Braille density fill.
+
+![Pie chart](screenshots/pie_chart.svg)
 
 ## Usage
 
@@ -64,57 +100,59 @@ Add `ploot` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ploot = "0.1.2"
+ploot = "0.1.5"
 ```
 
-### Figure / Axes2D builder API
+### Line plot
 
 ```rust
-use ploot::{Figure, PlotOption, DashType, PointSymbol};
+use ploot::prelude::*;
 
-let mut fig = Figure::new();
-fig.set_terminal_size(80, 24);
-{
-    let ax = fig.axes2d();
-    ax.set_title("Builder API Demo");
-    ax.set_x_label("x", &[]);
-    ax.set_y_label("y", &[]);
-    ax.set_y_grid(true);
+let xs: Vec<f64> = (-30..=30).map(|i| i as f64 / 10.0).collect();
+let quadratic: Vec<f64> = xs.iter().map(|&x| x * x).collect();
+let sine: Vec<f64> = xs.iter().map(|&x| 8.0 * (x * 1.5).sin()).collect();
 
-    let xs: Vec<f64> = (-30..=30).map(|i| i as f64 / 10.0).collect();
-    let quadratic: Vec<f64> = xs.iter().map(|&x| x * x).collect();
-    let sine: Vec<f64> = xs.iter().map(|&x| 8.0 * (x * 1.5).sin()).collect();
+let layout = Layout2D::new()
+    .with_title("Line Plot Demo")
+    .with_x_label("x")
+    .with_y_label("y")
+    .with_y_grid(true)
+    .with_plot(LinePlot::new(xs.iter().copied(), quadratic.iter().copied())
+        .with_caption("x^2"))
+    .with_plot(LinePlot::new(xs.iter().copied(), sine.iter().copied())
+        .with_caption("8*sin(1.5x)")
+        .with_dash(DashType::Dash));
 
-    ax.lines(
-        xs.iter().copied(),
-        quadratic.iter().copied(),
-        &[PlotOption::Caption("x^2".into()), PlotOption::LineStyle(DashType::Solid)],
-    );
-    ax.lines(
-        xs.iter().copied(),
-        sine.iter().copied(),
-        &[PlotOption::Caption("8*sin(1.5x)".into()), PlotOption::LineStyle(DashType::Dash)],
-    );
-}
-fig.show();
+Figure::new()
+    .with_size(80, 24)
+    .with_layout(layout)
+    .show();
 ```
 
-### Quick one-shot API
-
-For simple plots without the full builder:
+### Scatter plot
 
 ```rust
-let xs: Vec<f64> = (0..=100).map(|i| i as f64 / 10.0).collect();
-let ys: Vec<f64> = xs.iter().map(|&x| x.sin()).collect();
+use ploot::prelude::*;
 
-let plot = ploot::quick_plot(&xs, &ys, Some("sin(x)"), Some("x"), Some("y"), 80, 24);
-println!("{plot}");
+let xs: Vec<f64> = (0..40).map(|i| (i as f64 * 0.15).sin() * 3.0).collect();
+let ys: Vec<f64> = (0..40).map(|i| (i as f64 * 0.15).cos() * 3.0).collect();
+
+let layout = Layout2D::new()
+    .with_title("Scatter")
+    .with_plot(ScatterPlot::new(xs, ys)
+        .with_symbol(PointSymbol::Circle)
+        .with_caption("points"));
+
+Figure::new()
+    .with_size(60, 20)
+    .with_layout(layout)
+    .show();
 ```
 
 ### Heatmap
 
 ```rust
-use ploot::GridData;
+use ploot::prelude::*;
 
 let grid = GridData::from_fn(
     |x, y| x.sin() * y.cos(),
@@ -122,27 +160,43 @@ let grid = GridData::from_fn(
     (-std::f64::consts::PI, std::f64::consts::PI),
     40, 40,
 );
-let output = ploot::quick_heatmap(grid, Some("sin(x)*cos(y)"), Some("x"), Some("y"), 80, 24);
-println!("{output}");
+
+let layout = Layout2D::new()
+    .with_title("sin(x)*cos(y)")
+    .with_x_label("x")
+    .with_y_label("y")
+    .with_plot(HeatmapPlot::new(grid));
+
+Figure::new()
+    .with_size(80, 24)
+    .with_layout(layout)
+    .show();
 ```
 
 ### Contour
 
 ```rust
-use ploot::GridData;
+use ploot::prelude::*;
 
 let grid = GridData::from_fn(
     |x, y| (-0.5 * (x * x + y * y)).exp(),
     (-3.0, 3.0), (-3.0, 3.0), 40, 40,
 );
-let output = ploot::quick_contour(grid, 8, Some("Gaussian"), 80, 24);
-println!("{output}");
+
+let layout = Layout2D::new()
+    .with_title("Gaussian")
+    .with_plot(ContourPlot::new(grid).with_levels(8));
+
+Figure::new()
+    .with_size(80, 24)
+    .with_layout(layout)
+    .show();
 ```
 
 ### Heatmap + contour overlay
 
 ```rust
-use ploot::{Figure, GridData, PlotOption};
+use ploot::prelude::*;
 
 let grid = GridData::from_fn(
     |x, y| x.sin() * y.cos(),
@@ -150,80 +204,81 @@ let grid = GridData::from_fn(
     (-std::f64::consts::PI, std::f64::consts::PI),
     40, 40,
 );
-let mut fig = Figure::new();
-fig.set_terminal_size(80, 24);
-{
-    let ax = fig.axes2d();
-    ax.set_title("Heatmap + Contour");
-    ax.heatmap_contour(grid, None, &[PlotOption::ContourLevels(10)]);
-}
-fig.show();
+
+let layout = Layout2D::new()
+    .with_title("Heatmap + Contour")
+    .with_plot(HeatmapContourPlot::new(grid)
+        .with_levels(10)
+        .with_colormap(ColorMapType::BlueRed));
+
+Figure::new()
+    .with_size(80, 24)
+    .with_layout(layout)
+    .show();
 ```
 
 ### 3D surface
 
 ```rust
-use ploot::{ColorMapType, Figure, GridData, SurfaceStyle};
+use ploot::prelude::*;
 
 let grid = GridData::from_fn(
     |x, y| (x * x + y * y).sqrt().sin(),
     (-4.0, 4.0), (-4.0, 4.0), 20, 20,
 );
-let mut fig = Figure::new();
-fig.set_terminal_size(80, 24);
-{
-    let ax = fig.axes3d();
-    ax.set_title("3D Surface");
-    ax.set_view(30.0, 30.0);
-    ax.set_colormap(ColorMapType::Rainbow);
-    ax.surface(grid, SurfaceStyle::Filled, &[]);
-}
-fig.show();
+
+let layout = Layout3D::new()
+    .with_title("3D Surface")
+    .with_view(30.0, 30.0)
+    .with_colormap(ColorMapType::Rainbow)
+    .with_surface(grid, SurfaceStyle::Filled, &[]);
+
+Figure::new()
+    .with_size(80, 24)
+    .with_layout3d(layout)
+    .show();
 ```
 
 Other surface styles: `SurfaceStyle::Wireframe`, `SurfaceStyle::HiddenLine`.
 
 ### Dual Y-axis
 
-Plot series against independent primary and secondary y-axes using `PlotOption::Axes(AxisPair::X1Y2)`:
-
 ```rust
-use ploot::{AutoOption, AxisPair, DashType, Figure, PlotOption};
-use ploot::canvas::color::TermColor;
+use ploot::prelude::*;
 
 let months: Vec<f64> = (1..=12).map(|i| i as f64).collect();
 let temperature = vec![-2.0, 0.5, 5.0, 11.0, 16.0, 20.0, 22.0, 21.0, 17.0, 11.0, 5.0, 0.0];
 let rainfall = vec![45.0, 40.0, 55.0, 60.0, 70.0, 80.0, 75.0, 65.0, 70.0, 75.0, 60.0, 50.0];
 
-let mut fig = Figure::new();
-fig.set_terminal_size(80, 24);
-{
-    let ax = fig.axes2d();
-    ax.set_title("Monthly Temperature & Rainfall");
-    ax.set_x_label("Month", &[]);
-    ax.set_y_label("Temperature (C)", &[]);
-    ax.set_y2_label("Rainfall (mm)", &[]);
+let layout = Layout2D::new()
+    .with_title("Monthly Temperature & Rainfall")
+    .with_x_label("Month")
+    .with_y_label("Temperature (C)")
+    .with_plot(LinePlot::new(months.iter().copied(), temperature.iter().copied())
+        .with_caption("Temperature")
+        .with_color(TermColor::Red))
+    .with_plot(LinePlot::new(months.iter().copied(), rainfall.iter().copied())
+        .with_caption("Rainfall")
+        .with_color(TermColor::Blue)
+        .with_axes(AxisPair::X1Y2)
+        .with_dash(DashType::Dash));
 
-    // Temperature on primary y-axis
-    ax.lines(
-        months.iter().copied(),
-        temperature.iter().copied(),
-        &[PlotOption::Caption("Temperature".into()), PlotOption::Color(TermColor::Red)],
-    );
+Figure::new()
+    .with_size(80, 24)
+    .with_layout(layout)
+    .show();
+```
 
-    // Rainfall on secondary y-axis
-    ax.lines(
-        months.iter().copied(),
-        rainfall.iter().copied(),
-        &[
-            PlotOption::Caption("Rainfall".into()),
-            PlotOption::Color(TermColor::Blue),
-            PlotOption::Axes(AxisPair::X1Y2),
-            PlotOption::LineStyle(DashType::Dash),
-        ],
-    );
-}
-fig.show();
+### Quick one-shot API
+
+For throwaway plots without the builder:
+
+```rust
+let xs: Vec<f64> = (0..=100).map(|i| i as f64 / 10.0).collect();
+let ys: Vec<f64> = xs.iter().map(|&x| x.sin()).collect();
+
+let output = ploot::quick_plot(&xs, &ys, Some("sin(x)"), Some("x"), Some("y"), 80, 24);
+println!("{output}");
 ```
 
 ## Features
@@ -232,9 +287,12 @@ fig.show();
 - **Line plots** - solid, dashed, dotted, and custom dash patterns
 - **Scatter plots** - six marker styles: dot, cross, circle, diamond, triangle, square
 - **Bar charts** - filled boxes with configurable width
+- **Histograms** - automatic binning of raw data with optional normalization
 - **Fill-between** - shaded area between two curves
 - **Error bars** - X and Y error bars, with or without connecting lines
 - **Box-and-whisker** - statistical summary plots
+- **Candlestick** - OHLC financial data with body and wick rendering
+- **Pie chart** - proportional arc segments with labels
 
 ### 2D grid data
 - **Heatmap** - color-mapped density rendering of Z(x,y) scalar fields using Braille dot density + ANSI color (7 colors x 8 density levels = 56 perceptual levels)
@@ -298,15 +356,22 @@ API (Figure, Axes2D, Axes3D, GridData, options, series data)
 Run any example from the `examples/` directory:
 
 ```bash
-cargo run --example line_plot
 cargo run --example bar_chart
-cargo run --example dual_axis
-cargo run --example heatmap
+cargo run --example box_whisker
+cargo run --example candlestick
 cargo run --example contour
+cargo run --example dual_axis
+cargo run --example fill_between
+cargo run --example heatmap
 cargo run --example heatmap_contour
-cargo run --example surface_wireframe
-cargo run --example surface_hidden
+cargo run --example histogram
+cargo run --example line_plot
+cargo run --example multi_series
+cargo run --example pie_chart
+cargo run --example scatter
 cargo run --example surface_filled
+cargo run --example surface_hidden
+cargo run --example surface_wireframe
 ```
 
 ## License

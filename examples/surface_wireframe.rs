@@ -1,4 +1,4 @@
-use ploot::GridData;
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,13 +8,14 @@ fn main() {
         25,
         25,
     );
-    let output = ploot::quick_surface(
-        grid,
-        Some("3D Wireframe: sin(sqrt(x^2+y^2))"),
-        80,
-        24,
-        35.0,
-        25.0,
-    );
-    println!("{output}");
+
+    let layout = Layout3D::new()
+        .with_title("3D Wireframe: sin(sqrt(x^2+y^2))")
+        .with_view(35.0, 25.0)
+        .with_surface(grid, SurfaceStyle::Wireframe, &[]);
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout3d(layout)
+        .show();
 }

@@ -1,4 +1,4 @@
-use ploot::{Figure, GridData, PlotOption};
+use ploot::prelude::*;
 
 fn main() {
     let grid = GridData::from_fn(
@@ -8,14 +8,18 @@ fn main() {
         40,
         40,
     );
-    let mut fig = Figure::new();
-    fig.set_terminal_size(80, 24);
-    {
-        let ax = fig.axes2d();
-        ax.set_title("Heatmap + Contour: sin(x)*cos(y)");
-        ax.set_x_label("x", &[]);
-        ax.set_y_label("y", &[]);
-        ax.heatmap_contour(grid, None, &[PlotOption::ContourLevels(10)]);
-    }
-    fig.show();
+
+    let plot = HeatmapContourPlot::new(grid)
+        .with_levels(10);
+
+    let layout = Layout2D::new()
+        .with_title("Heatmap + Contour: sin(x)*cos(y)")
+        .with_x_label("x")
+        .with_y_label("y")
+        .with_plot(plot);
+
+    Figure::new()
+        .with_size(80, 24)
+        .with_layout(layout)
+        .show();
 }
